@@ -1,0 +1,13 @@
+[package]
+name = "astrum"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+
+[dependencies]
+color-eyre = "0.6.3"
+crossterm = "0.28.1"
+expect-test = "1.5.1"
+immutable-map = "0.1.2"
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
+snafu = "0.8.9"
