@@ -1,7 +1,5 @@
 use crate::import::*;
 
-type StdResult<T> = crate::error::Result<T>;
-
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Unable to insert an empty key"))]
@@ -12,11 +10,11 @@ pub enum Error {
 
 #[derive(Clone, Debug)]
 pub struct Map<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> {
-    map: TreeMap<K, Result<K, V>>,
+    map: TreeMap<K, Node<K, V>>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Result<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> {
+pub enum Node<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> {
     SubTree(Map<K, V>),
     Value(V),
 }
@@ -33,7 +31,7 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
         }
     }
 
-    pub fn insert(self, key_seq: &Vec<K>, v: V) -> StdResult<Self> {
+    pub fn insert(self, key_seq: &Vec<K>, v: V) -> Result<Self> {
         let key_seq_iter = key_seq.iter();
         let result = Self::insert_raw(
             Some(self),
@@ -42,8 +40,8 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
             InsertionDebugContext { key_seq, depth: 1 },
         )?;
         match result {
-            Result::SubTree(subtree) => Ok(subtree),
-            Result::Value(_) => InsertingWithEmptyKeySnafu.fail().context(PrefixTreeSnafu),
+            Node::SubTree(subtree) => Ok(subtree),
+            Node::Value(_) => InsertingWithEmptyKeySnafu.fail().context(PrefixTreeSnafu),
         }
     }
 
@@ -52,7 +50,7 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
         mut key_seq_iter: std::slice::Iter<K>,
         v: V,
         mut insertion_debug_context: InsertionDebugContext<'a, K>,
-    ) -> StdResult<Result<K, V>> {
+    ) -> Result<Node<K, V>> {
         let k = key_seq_iter.next();
         match k {
             None => {
@@ -64,7 +62,7 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
                     .fail()
                     .context(PrefixTreeSnafu)?;
                 }
-                Ok(Result::Value(v))
+                Ok(Node::Value(v))
             }
             Some(k) => {
                 let curr = curr.unwrap_or_else(|| Self {
@@ -72,7 +70,7 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
                 });
                 let map = match curr.map.get(&k) {
                     None => None,
-                    Some(Result::Value(v)) => {
+                    Some(Node::Value(v)) => {
                         let key: Vec<K> = insertion_debug_context.key_seq.clone();
                         let existing_key: Vec<K> = insertion_debug_context
                             .key_seq
@@ -88,11 +86,11 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
                         .context(PrefixTreeSnafu)?;
                         None
                     }
-                    Some(Result::SubTree(subtree)) => Some(subtree.clone()),
+                    Some(Node::SubTree(subtree)) => Some(subtree.clone()),
                 };
                 insertion_debug_context.depth += 1;
                 let result = Self::insert_raw(map, key_seq_iter, v, insertion_debug_context)?;
-                Ok(Result::SubTree(Self {
+                Ok(Node::SubTree(Self {
                     map: curr.map.insert(k.clone(), result),
                 }))
             }
