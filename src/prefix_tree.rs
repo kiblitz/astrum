@@ -7,7 +7,7 @@ pub enum Error {
     #[snafu(display("Unable to insert an empty key"))]
     InsertingWithEmptyKeyError,
     #[snafu(display("Insertion would override existing entry: {context}"))]
-    OverwritingExistingValue { context: String },
+    OverwritingExistingValueError { context: String },
 }
 
 #[derive(Clone, Debug)]

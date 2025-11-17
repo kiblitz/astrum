@@ -61,8 +61,8 @@ fn test_overwrite_with_prefix() {
 
     let expected = expect![[r#"
         Err(
-            PrefixTree {
-                source: OverwritingExistingValue {
+            PrefixTreeError {
+                source: OverwritingExistingValueError {
                     context: "(key ['a'])",
                 },
             },
@@ -77,8 +77,8 @@ fn test_overwrite_prefix() {
 
     let expected = expect![[r#"
         Err(
-            PrefixTree {
-                source: OverwritingExistingValue {
+            PrefixTreeError {
+                source: OverwritingExistingValueError {
                     context: "(key ['a', 'b', 'c']) (existing_key ['a']) (existing_value 0)",
                 },
             },
@@ -94,8 +94,8 @@ fn test_overwrite_prefix2() {
 
     let expected = expect![[r#"
         Err(
-            PrefixTree {
-                source: OverwritingExistingValue {
+            PrefixTreeError {
+                source: OverwritingExistingValueError {
                     context: "(key ['h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd']) (existing_key ['h', 'e', 'l', 'l', 'o']) (existing_value 0)",
                 },
             },

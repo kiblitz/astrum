@@ -3,7 +3,7 @@ use crate::import::*;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Unable to find path: {cli:?}"))]
-    CliInvocationFailure {
+    CliInvocationError {
         #[snafu(source(from(io::Error, Rc::new)))]
         source: Rc<io::Error>,
         cli: Cli,
@@ -30,7 +30,7 @@ impl Action {
                 let output = process::Command::new(&cli.command)
                     .args(&cli.args)
                     .output()
-                    .context(CliInvocationFailureSnafu { cli: cli.clone() })
+                    .context(CliInvocationSnafu { cli: cli.clone() })
                     .context(ActionSnafu)?;
                 info!("{:?}", output);
                 Ok(())

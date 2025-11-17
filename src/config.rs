@@ -3,10 +3,10 @@ use crate::import::*;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Unable to find path: {config:?}"))]
-    BasePathFailure {
+    BasePathError {
         config: ConfigKind,
     },
-    PathStringifyFailure {
+    PathStringifyError {
         config: ConfigKind,
     },
 }
@@ -28,14 +28,14 @@ impl ConfigKind {
     pub fn load<T: DeserializeOwned>(self) -> Result<T> {
         let path = self
             .path()
-            .ok_or(Error::BasePathFailure {
+            .ok_or(Error::BasePathError {
                 config: self.clone(),
             })
             .context(ConfigSnafu)?;
         let path_str = path
             .as_path()
             .to_str()
-            .ok_or(Error::PathStringifyFailure {
+            .ok_or(Error::PathStringifyError {
                 config: self.clone(),
             })
             .context(ConfigSnafu)?;
