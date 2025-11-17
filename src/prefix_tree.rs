@@ -9,12 +9,12 @@ pub enum Error {
 }
 
 #[derive(Clone, Debug)]
-pub struct Map<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> {
+pub struct Map<K: Clone + Debug + Eq + Ord, V: Clone + Debug> {
     map: TreeMap<K, Node<K, V>>,
 }
 
 #[derive(Clone, Debug)]
-pub enum Node<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> {
+pub enum Node<K: Clone + Debug + Ord, V: Clone + Debug> {
     SubTree(Map<K, V>),
     Value(V),
 }
@@ -24,7 +24,7 @@ struct InsertionDebugContext<'a, K: Clone + Debug> {
     depth: usize,
 }
 
-impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
+impl<K: Clone + Debug + Ord, V: Clone + Debug> Map<K, V> {
     pub fn new() -> Self {
         Self {
             map: TreeMap::new(),
@@ -95,5 +95,9 @@ impl<K: Clone + Debug + Eq + Hash + Ord, V: Clone + Debug> Map<K, V> {
                 }))
             }
         }
+    }
+
+    pub fn enter(&self, key: &K) -> Option<&Node<K, V>> {
+        self.map.get(key)
     }
 }
