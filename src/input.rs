@@ -2,7 +2,7 @@ use crate::import::*;
 
 // We need to do this ugly conversion because [crossterm::event::KeyCode] doesn't derive [Ord].
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd)]
-struct KeyCodeWrapper(pub KeyCode);
+pub struct KeyCodeWrapper(pub KeyCode);
 
 impl Ord for KeyCodeWrapper {
     fn cmp(self: &Self, self2: &Self) -> Ordering {

@@ -18,7 +18,7 @@ pub mod import {
     pub use serde_lexpr;
     pub use snafu::prelude::*;
     pub use std::{
-        cmp::Ordering, collections::HashSet, convert::From, error, fmt, fs, hash::Hash, io,
+        cmp::Ordering, collections::HashSet, convert::From, error, fmt::Debug, fs, hash::Hash, io,
         iter::Iterator, path::PathBuf, process, rc::Rc, slice::Iter,
     };
 

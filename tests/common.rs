@@ -5,7 +5,7 @@ pub mod import {
 
 use import::*;
 
-pub fn prefix_tree_of_strings<V: Clone>(
+pub fn prefix_tree_of_strings<V: Clone + Debug>(
     kv_pairs: Vec<(&str, V)>,
 ) -> Result<prefix_tree::Map<char, V>> {
     kv_pairs
