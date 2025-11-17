@@ -5,6 +5,9 @@ pub type Result<T> = color_eyre::Result<T, Error>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
+    Config {
+        source: config::Error,
+    },
     PrefixTree {
         source: prefix_tree::Error,
     },
@@ -15,5 +18,9 @@ pub enum Error {
     ReportError {
         #[snafu(source(from(eyre::ErrReport, Rc::new)))]
         source: Rc<eyre::ErrReport>,
+    },
+    SexpSerdeError {
+        #[snafu(source(from(serde_lexpr::Error, Rc::new)))]
+        source: Rc<serde_lexpr::Error>,
     },
 }

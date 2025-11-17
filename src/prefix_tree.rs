@@ -8,12 +8,12 @@ pub enum Error {
     InsertingWithEmptyKeyError,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Map<K: Clone + Eq + Hash + Ord, V: Clone> {
     map: TreeMap<K, Result<K, V>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum Result<K: Clone + Eq + Hash + Ord, V: Clone> {
     SubTree(Map<K, V>),
     Value(V),
@@ -26,7 +26,7 @@ impl<K: Clone + Eq + Hash + Ord, V: Clone> Map<K, V> {
         }
     }
 
-    pub fn insert(self, key_seq: Vec<K>, v: V) -> StdResult<Self> {
+    pub fn insert(self, key_seq: &Vec<K>, v: V) -> StdResult<Self> {
         let key_seq_iter = key_seq.iter();
         let result = Self::insert_raw(Some(self), key_seq_iter, v);
         match result {

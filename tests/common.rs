@@ -11,6 +11,6 @@ pub fn prefix_tree_of_strings<V: Clone>(
     kv_pairs
         .iter()
         .fold(Ok(prefix_tree::Map::new()), |prefix_tree, (key, value)| {
-            prefix_tree?.insert(key.chars().collect(), value.clone())
+            prefix_tree?.insert(&key.chars().collect(), value.clone())
         })
 }
