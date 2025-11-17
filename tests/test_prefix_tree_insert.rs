@@ -3,7 +3,7 @@ use common::import::*;
 
 #[test]
 fn test_basic_construction() {
-    let prefix_tree = common::prefix_tree_of_strings(vec![
+    let prefix_tree = common::prefix_tree::of_strings(vec![
         ("abc", 0),
         ("abd", 1),
         ("ae", 2),
@@ -57,7 +57,7 @@ fn test_basic_construction() {
 
 #[test]
 fn test_overwrite_with_prefix() {
-    let prefix_tree = common::prefix_tree_of_strings(vec![("abc", 0), ("a", 1)]);
+    let prefix_tree = common::prefix_tree::of_strings(vec![("abc", 0), ("a", 1)]);
 
     let expected = expect![[r#"
         Err(
@@ -73,7 +73,7 @@ fn test_overwrite_with_prefix() {
 
 #[test]
 fn test_overwrite_prefix() {
-    let prefix_tree = common::prefix_tree_of_strings(vec![("a", 0), ("abc", 1)]);
+    let prefix_tree = common::prefix_tree::of_strings(vec![("a", 0), ("abc", 1)]);
 
     let expected = expect![[r#"
         Err(
@@ -90,7 +90,7 @@ fn test_overwrite_prefix() {
 #[test]
 fn test_overwrite_prefix2() {
     let prefix_tree =
-        common::prefix_tree_of_strings(vec![("hello", 0), ("help", 1), ("hello world", 2)]);
+        common::prefix_tree::of_strings(vec![("hello", 0), ("help", 1), ("hello world", 2)]);
 
     let expected = expect![[r#"
         Err(
