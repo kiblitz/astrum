@@ -1,28 +1,39 @@
 use crate::import::*;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Action {
-    Cli {
-        name: String,
-        command: String,
-        args: Vec<String>,
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Unable to find path: {cli:?}"))]
+    CliInvocationFailure {
+        #[snafu(source(from(io::Error, Rc::new)))]
+        source: Rc<io::Error>,
+        cli: Cli,
     },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    Cli(Cli),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Cli {
+    name: String,
+    command: String,
+    args: Vec<String>,
+}
+
 impl Action {
-    pub fn invoke(&self) {
+    pub fn invoke(&self) -> Result<()> {
         match self {
-            Action::Cli {
-                name,
-                command,
-                args,
-            } => {
-                let output = process::Command::new(command)
-                    .args(args)
+            Action::Cli(cli) => {
+                let output = process::Command::new(&cli.command)
+                    .args(&cli.args)
                     .output()
-                    .expect(&format!("cli action invocation failed: {}", name,));
-                info!("{:?}", output)
+                    .context(CliInvocationFailureSnafu { cli: cli.clone() })
+                    .context(ActionSnafu)?;
+                info!("{:?}", output);
+                Ok(())
             }
         }
     }
