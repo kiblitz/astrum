@@ -1,5 +1,15 @@
 use crate::import::*;
 
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Unable to find path: {cli:?}"))]
+    CliInvocationError {
+        #[snafu(source(from(io::Error, Rc::new)))]
+        source: Rc<io::Error>,
+        cli: action::Cli,
+    },
+}
+
 // We need to do this ugly conversion because [crossterm::event::KeyCode] doesn't derive [Ord].
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd)]
 pub struct KeyCodeWrapper(pub KeyCode);
@@ -35,5 +45,19 @@ impl Input {
         )?;
 
         Ok(Self { command_palette })
+    }
+
+    fn invoke_action(&self, action: action::Action) -> Result<()> {
+        match action {
+            action::Action::Cli(cli) => {
+                let output = process::Command::new(&cli.command)
+                    .args(&cli.args)
+                    .output()
+                    .context(CliInvocationSnafu { cli: cli.clone() })
+                    .context(InputSnafu)?;
+                info!("{:?}", output);
+                Ok(())
+            }
+        }
     }
 }

@@ -5,8 +5,8 @@ pub type Result<T> = color_eyre::Result<T, Error>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
-    ActionError {
-        source: action::Error,
+    InputError {
+        source: input::Error,
     },
     ConfigError {
         source: config::Error,
