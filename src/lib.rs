@@ -19,7 +19,7 @@ pub mod import {
     pub use snafu::prelude::*;
     pub use std::{
         cmp::Ordering, collections::HashSet, convert::From, error, fmt::Debug, fs, hash::Hash, io,
-        iter::Iterator, path::PathBuf, process, rc::Rc, slice::Iter,
+        iter::Iterator, path::PathBuf, process, rc::Rc, slice::Iter, vec,
     };
 
     pub use crate::action;

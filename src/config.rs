@@ -11,12 +11,63 @@ pub enum Error {
     },
 }
 
-pub type Keybindings = Vec<Keybinding>;
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Keybindings {
+    keybindings: Vec<Keybinding>,
+    normal: Vec<KeyCode>,
+    insert: Vec<KeyCode>,
+    visual: Vec<KeyCode>,
+    down: Vec<KeyCode>,
+    left: Vec<KeyCode>,
+    up: Vec<KeyCode>,
+    right: Vec<KeyCode>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Keybinding {
     pub key_sequence: Vec<KeyCode>,
     pub action: action::Action,
+}
+
+impl IntoIterator for Keybindings {
+    type Item = Keybinding;
+    type IntoIter = vec::IntoIter<Keybinding>;
+
+    fn into_iter(self) -> vec::IntoIter<Keybinding> {
+        let mut keybindings = self.keybindings;
+
+        keybindings.push(Keybinding {
+            key_sequence: self.normal,
+            action: action::Action::SetMode(input::Mode::Normal),
+        });
+        keybindings.push(Keybinding {
+            key_sequence: self.insert,
+            action: action::Action::SetMode(input::Mode::Insert),
+        });
+        keybindings.push(Keybinding {
+            key_sequence: self.visual,
+            action: action::Action::SetMode(input::Mode::Visual),
+        });
+
+        keybindings.push(Keybinding {
+            key_sequence: self.down,
+            action: action::Action::Move(action::Direction::Down),
+        });
+        keybindings.push(Keybinding {
+            key_sequence: self.left,
+            action: action::Action::Move(action::Direction::Left),
+        });
+        keybindings.push(Keybinding {
+            key_sequence: self.up,
+            action: action::Action::Move(action::Direction::Up),
+        });
+        keybindings.push(Keybinding {
+            key_sequence: self.right,
+            action: action::Action::Move(action::Direction::Right),
+        });
+
+        keybindings.into_iter()
+    }
 }
 
 #[derive(Debug, Clone)]

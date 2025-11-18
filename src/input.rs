@@ -10,6 +10,19 @@ pub enum Error {
     },
 }
 
+#[derive(Debug)]
+pub struct Input {
+    command_palette: prefix_tree::Map<KeyCodeWrapper, action::Action>,
+    mode_: Mode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Mode {
+    Insert,
+    Normal,
+    Visual,
+}
+
 // We need to do this ugly conversion because [crossterm::event::KeyCode] doesn't derive [Ord].
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd)]
 pub struct KeyCodeWrapper(pub KeyCode);
@@ -20,16 +33,11 @@ impl Ord for KeyCodeWrapper {
     }
 }
 
-#[derive(Debug)]
-pub struct Input {
-    command_palette: prefix_tree::Map<KeyCodeWrapper, action::Action>,
-}
-
 impl Input {
     pub fn load() -> Result<Self> {
         let keybindings: config::Keybindings = config::ConfigKind::Keybindings.load()?;
 
-        let command_palette = keybindings.iter().fold(
+        let command_palette = keybindings.into_iter().fold(
             Ok(prefix_tree::Map::new()),
             |command_palette,
              config::Keybinding {
@@ -44,10 +52,13 @@ impl Input {
             },
         )?;
 
-        Ok(Self { command_palette })
+        Ok(Self {
+            command_palette,
+            mode_: Mode::Normal,
+        })
     }
 
-    fn invoke_action(&self, action: action::Action) -> Result<()> {
+    fn invoke_action(&mut self, action: action::Action) -> Result<()> {
         match action {
             action::Action::Cli(cli) => {
                 let output = process::Command::new(&cli.command)
@@ -58,6 +69,15 @@ impl Input {
                 info!("{:?}", output);
                 Ok(())
             }
+            action::Action::Move(direction) => self.move_cursor(&direction),
+            action::Action::SetMode(mode_) => {
+                self.mode_ = mode_;
+                Ok(())
+            }
         }
+    }
+
+    fn move_cursor(&mut self, direction: &action::Direction) -> Result<()> {
+        todo!()
     }
 }
