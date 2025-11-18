@@ -13,6 +13,7 @@ pub enum Error {
 #[derive(Debug)]
 pub struct Input {
     command_palette: prefix_tree::Map<KeyCodeWrapper, action::Action>,
+    palette_on: prefix_tree::Map<KeyCodeWrapper, action::Action>,
     mode_: Mode,
 }
 
@@ -20,6 +21,7 @@ pub struct Input {
 pub enum Mode {
     Insert,
     Normal,
+    Palette,
     Visual,
 }
 
@@ -51,14 +53,28 @@ impl Input {
                 command_palette?.insert(&key_sequence, action.clone())
             },
         )?;
+        let palette_on = command_palette.clone();
 
         Ok(Self {
             command_palette,
+            palette_on,
             mode_: Mode::Normal,
         })
     }
 
-    fn invoke_action(&mut self, action: action::Action) -> Result<()> {
+    pub fn consume_key(&mut self, key: &KeyCode) -> Result<()> {
+        match self.palette_on.enter(&KeyCodeWrapper(key.clone())) {
+            None => self.mode_ = Mode::Normal,
+            Some(prefix_tree::Node::Value(action)) => {
+                self.invoke_action(&action.clone())?;
+                self.palette_on = self.command_palette.clone();
+            }
+            Some(prefix_tree::Node::SubTree(subtree)) => self.palette_on = subtree.clone(),
+        }
+        Ok(())
+    }
+
+    fn invoke_action(&mut self, action: &action::Action) -> Result<()> {
         match action {
             action::Action::Cli(cli) => {
                 let output = process::Command::new(&cli.command)
@@ -71,7 +87,7 @@ impl Input {
             }
             action::Action::Move(direction) => self.move_cursor(&direction),
             action::Action::SetMode(mode_) => {
-                self.mode_ = mode_;
+                self.mode_ = mode_.clone();
                 Ok(())
             }
         }

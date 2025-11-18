@@ -14,8 +14,9 @@ pub enum Error {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Keybindings {
     keybindings: Vec<Keybinding>,
-    normal: Vec<KeyCode>,
     insert: Vec<KeyCode>,
+    normal: Vec<KeyCode>,
+    palette: Vec<KeyCode>,
     visual: Vec<KeyCode>,
     down: Vec<KeyCode>,
     left: Vec<KeyCode>,
@@ -37,12 +38,16 @@ impl IntoIterator for Keybindings {
         let mut keybindings = self.keybindings;
 
         keybindings.push(Keybinding {
+            key_sequence: self.insert,
+            action: action::Action::SetMode(input::Mode::Insert),
+        });
+        keybindings.push(Keybinding {
             key_sequence: self.normal,
             action: action::Action::SetMode(input::Mode::Normal),
         });
         keybindings.push(Keybinding {
-            key_sequence: self.insert,
-            action: action::Action::SetMode(input::Mode::Insert),
+            key_sequence: self.palette,
+            action: action::Action::SetMode(input::Mode::Palette),
         });
         keybindings.push(Keybinding {
             key_sequence: self.visual,
