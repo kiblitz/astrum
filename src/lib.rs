@@ -21,11 +21,13 @@ pub mod import {
         cmp::Ordering, collections::HashSet, convert::From, error, fmt::Debug, fs, hash::Hash, io,
         iter::Iterator, path::PathBuf, process, rc::Rc, slice::Iter, vec,
     };
+    pub use strum_macros::EnumDiscriminants;
 
     pub use crate::action;
     pub use crate::app;
     pub use crate::command;
     pub use crate::config;
+    pub use crate::cursor;
     pub use crate::error::*;
     pub use crate::input;
     pub use crate::prefix_tree;
@@ -35,6 +37,7 @@ pub mod action;
 pub mod app;
 pub mod command;
 pub mod config;
+pub mod cursor;
 pub mod error;
 pub mod input;
 pub mod prefix_tree;

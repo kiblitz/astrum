@@ -39,19 +39,19 @@ impl IntoIterator for Keybindings {
 
         keybindings.push(Keybinding {
             key_sequence: self.insert,
-            action: action::Action::SetMode(input::Mode::Insert),
+            action: action::Action::SetMode(input::ModeDiscriminants::Insert),
         });
         keybindings.push(Keybinding {
             key_sequence: self.normal,
-            action: action::Action::SetMode(input::Mode::Normal),
+            action: action::Action::SetMode(input::ModeDiscriminants::Normal),
         });
         keybindings.push(Keybinding {
             key_sequence: self.palette,
-            action: action::Action::SetMode(input::Mode::Palette),
+            action: action::Action::SetMode(input::ModeDiscriminants::Palette),
         });
         keybindings.push(Keybinding {
             key_sequence: self.visual,
-            action: action::Action::SetMode(input::Mode::Visual),
+            action: action::Action::SetMode(input::ModeDiscriminants::Visual),
         });
 
         keybindings.push(Keybinding {

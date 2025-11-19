@@ -5,7 +5,7 @@ use crate::import::*;
 pub enum Action {
     Cli(Cli),
     Move(Direction),
-    SetMode(input::Mode),
+    SetMode(input::ModeDiscriminants),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

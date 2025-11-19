@@ -16,3 +16,5 @@ ratatui = { version = "0.29.0", features = ["all-widgets"] }
 serde-lexpr = "0.1.3"
 serde = { version = "1.0.228", features = ["derive"] }
 snafu = "0.8.9"
+strum = { version = "0.27", features = ["derive"] }
+strum_macros = "0.27"

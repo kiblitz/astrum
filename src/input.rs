@@ -15,14 +15,16 @@ pub struct Input {
     command_palette: prefix_tree::Map<KeyCodeWrapper, action::Action>,
     palette_on: prefix_tree::Map<KeyCodeWrapper, action::Action>,
     mode_: Mode,
+    cursor: cursor::Cursor,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, EnumDiscriminants, Serialize)]
+#[strum_discriminants(derive(Serialize, Deserialize))]
 pub enum Mode {
     Insert,
     Normal,
     Palette,
-    Visual,
+    Visual { start: cursor::Cursor },
 }
 
 // We need to do this ugly conversion because [crossterm::event::KeyCode] doesn't derive [Ord].
@@ -59,13 +61,16 @@ impl Input {
             command_palette,
             palette_on,
             mode_: Mode::Normal,
+            cursor: cursor::Cursor { col: 0, line: 0 },
         })
     }
 
     pub fn consume_key(&mut self, key: &KeyCode) -> Result<()> {
+        self.mode_ = Mode::Palette;
         match self.palette_on.enter(&KeyCodeWrapper(key.clone())) {
             None => self.mode_ = Mode::Normal,
             Some(prefix_tree::Node::Value(action)) => {
+                self.mode_ = Mode::Normal;
                 self.invoke_action(&action.clone())?;
                 self.palette_on = self.command_palette.clone();
             }
@@ -87,10 +92,21 @@ impl Input {
             }
             action::Action::Move(direction) => self.move_cursor(&direction),
             action::Action::SetMode(mode_) => {
-                self.mode_ = mode_.clone();
+                self.set_mode(&mode_);
                 Ok(())
             }
         }
+    }
+
+    fn set_mode(&mut self, mode_: &ModeDiscriminants) {
+        self.mode_ = match mode_ {
+            ModeDiscriminants::Insert => Mode::Insert,
+            ModeDiscriminants::Normal => Mode::Normal,
+            ModeDiscriminants::Palette => Mode::Palette,
+            ModeDiscriminants::Visual => Mode::Visual {
+                start: self.cursor.clone(),
+            },
+        };
     }
 
     fn move_cursor(&mut self, direction: &action::Direction) -> Result<()> {
