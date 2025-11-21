@@ -54,7 +54,7 @@ impl<K: Clone + Debug + Ord, V: Clone + Debug> Map<K, V> {
         let k = key_seq_iter.next();
         match k {
             None => {
-                let key: Vec<K> = insertion_debug_context.key_seq.clone();
+                let key: &Vec<K> = insertion_debug_context.key_seq;
                 if curr.is_some() {
                     (OverwritingExistingValueSnafu {
                         context: format!("(key {key:?})"),
@@ -71,16 +71,15 @@ impl<K: Clone + Debug + Ord, V: Clone + Debug> Map<K, V> {
                 let map = match curr.map.get(&k) {
                     None => None,
                     Some(Node::Value(v)) => {
-                        let key: Vec<K> = insertion_debug_context.key_seq.clone();
+                        let key: &Vec<K> = insertion_debug_context.key_seq;
                         let existing_key: Vec<K> = insertion_debug_context
                             .key_seq
                             .iter()
                             .take(insertion_debug_context.depth)
                             .cloned()
                             .collect();
-                        let existing_value = v.clone();
                         (OverwritingExistingValueSnafu {
-                            context: format!("(key {key:?}) (existing_key {existing_key:?}) (existing_value {existing_value:?})"),
+                            context: format!("(key {key:?}) (existing_key {existing_key:?}) (existing_value {v:?})"),
                         })
                         .fail()
                         .context(PrefixTreeSnafu)?;

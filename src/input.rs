@@ -50,9 +50,9 @@ impl Input {
              }| {
                 let key_sequence: Vec<KeyCodeWrapper> = key_sequence
                     .into_iter()
-                    .map(|key_code| KeyCodeWrapper(key_code.clone()))
+                    .map(|key_code| KeyCodeWrapper(key_code))
                     .collect();
-                command_palette?.insert(&key_sequence, action.clone())
+                command_palette?.insert(&key_sequence, action)
             },
         )?;
         let palette_on = command_palette.clone();
