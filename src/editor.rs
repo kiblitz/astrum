@@ -181,8 +181,8 @@ pub struct Editor {
     status_message: String,
     should_quit: bool,
     clipboard: Option<arboard::Clipboard>,
-    jump_back: Vec<JumpPosition>,
-    jump_forward: Vec<JumpPosition>,
+    /// Per-pane jump history: pane_id → (back_stack, forward_stack).
+    jump_history: HashMap<usize, (Vec<JumpPosition>, Vec<JumpPosition>)>,
     palette: Option<PaletteState>,
     find_file: Option<FindFileState>,
     swap_manager: SwapManager,
@@ -218,8 +218,7 @@ impl Editor {
             status_message: String::new(),
             should_quit: false,
             clipboard: arboard::Clipboard::new().ok(),
-            jump_back: Vec::new(),
-            jump_forward: Vec::new(),
+            jump_history: HashMap::new(),
             palette: None,
             find_file: None,
             swap_manager,
@@ -549,6 +548,7 @@ impl Editor {
                 if !self.pane_layout.is_single() {
                     self.pane_layout.close_active();
                     self.file_browsers.remove(&pane_id);
+                    self.jump_history.remove(&pane_id);
                 } else {
                     let pane_has_buffer = self.pane_layout.active_pane().buffer_id.is_some();
                     if pane_has_buffer || !self.buffers.is_empty() {
@@ -766,12 +766,18 @@ impl Editor {
                 if let Some(fb) = self.file_browsers.get(&old_id).cloned() {
                     self.file_browsers.insert(new_id, fb);
                 }
+                if let Some(history) = self.jump_history.get(&old_id).cloned() {
+                    self.jump_history.insert(new_id, history);
+                }
             }
             Action::SplitHorizontal => {
                 let old_id = self.pane_layout.active_id;
                 let new_id = self.pane_layout.split(SplitDirection::Horizontal);
                 if let Some(fb) = self.file_browsers.get(&old_id).cloned() {
                     self.file_browsers.insert(new_id, fb);
+                }
+                if let Some(history) = self.jump_history.get(&old_id).cloned() {
+                    self.jump_history.insert(new_id, history);
                 }
             }
             Action::FocusPaneNext => {
@@ -808,6 +814,7 @@ impl Editor {
                 let old_id = self.pane_layout.active_id;
                 self.pane_layout.close_active();
                 self.file_browsers.remove(&old_id);
+                self.jump_history.remove(&old_id);
             }
 
             // File browser
@@ -1112,6 +1119,7 @@ impl Editor {
             let pane_id = self.pane_layout.active_id;
             self.pane_layout.close_active();
             self.file_browsers.remove(&pane_id);
+            self.jump_history.remove(&pane_id);
         } else if force || self.confirm_double_quit() {
             self.should_quit = true;
         }
@@ -1149,7 +1157,9 @@ impl Editor {
         if self.pane_layout.active_pane().buffer_id == Some(removed_id) {
             let mut restored = false;
             // Search jump_back for a valid destination (skip stale entries)
-            while let Some(pos) = self.jump_back.pop() {
+            let pane_id = self.pane_layout.active_id;
+            let stacks = self.jump_history.entry(pane_id).or_insert_with(|| (Vec::new(), Vec::new()));
+            while let Some(pos) = stacks.0.pop() {
                 match &pos {
                     JumpPosition::Buffer { buffer_id, .. } => {
                         if *buffer_id != removed_id
@@ -1580,31 +1590,42 @@ impl Editor {
         }
     }
 
+    /// Get the (back, forward) jump stacks for the active pane.
+    fn jump_stacks_mut(&mut self) -> &mut (Vec<JumpPosition>, Vec<JumpPosition>) {
+        let pane_id = self.pane_layout.active_id;
+        self.jump_history.entry(pane_id).or_insert_with(|| (Vec::new(), Vec::new()))
+    }
+
     /// Push a specific browser directory as a jump position.
     fn push_browser_jump(&mut self, dir: PathBuf, selected: usize, scroll_offset: usize) {
-        self.jump_back.push(JumpPosition::Browser { dir, selected, scroll_offset });
-        self.jump_forward.clear();
-        if self.jump_back.len() > 100 {
-            self.jump_back.remove(0);
+        let stacks = self.jump_stacks_mut();
+        stacks.0.push(JumpPosition::Browser { dir, selected, scroll_offset });
+        stacks.1.clear();
+        if stacks.0.len() > 100 {
+            stacks.0.remove(0);
         }
     }
 
     /// Record the current position in the jump-back stack.
     fn push_jump(&mut self) {
         if let Some(pos) = self.current_jump_position() {
-            self.jump_back.push(pos);
-            self.jump_forward.clear();
-            if self.jump_back.len() > 100 {
-                self.jump_back.remove(0);
+            let stacks = self.jump_stacks_mut();
+            stacks.0.push(pos);
+            stacks.1.clear();
+            if stacks.0.len() > 100 {
+                stacks.0.remove(0);
             }
         }
     }
 
     fn jump_back(&mut self) {
-        if let Some(pos) = self.current_jump_position() {
-            self.jump_forward.push(pos);
+        let current = self.current_jump_position();
+        let stacks = self.jump_stacks_mut();
+        if let Some(cur) = current {
+            stacks.1.push(cur);
         }
-        if let Some(pos) = self.jump_back.pop() {
+        let pos = stacks.0.pop();
+        if let Some(pos) = pos {
             self.restore_jump(pos);
         } else {
             self.status_message = "No older jump position".into();
@@ -1612,10 +1633,13 @@ impl Editor {
     }
 
     fn jump_forward(&mut self) {
-        if let Some(pos) = self.current_jump_position() {
-            self.jump_back.push(pos);
+        let current = self.current_jump_position();
+        let stacks = self.jump_stacks_mut();
+        if let Some(cur) = current {
+            stacks.0.push(cur);
         }
-        if let Some(pos) = self.jump_forward.pop() {
+        let pos = stacks.1.pop();
+        if let Some(pos) = pos {
             self.restore_jump(pos);
         } else {
             self.status_message = "No newer jump position".into();
