@@ -32,6 +32,9 @@ pub struct Buffer {
     pub name: String,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
+    /// Lazy BLAKE3 hash of rope content. Set to None on any mutation,
+    /// recomputed on demand (swap timer tick, before save).
+    content_hash: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +55,7 @@ impl Buffer {
             name: "[scratch]".to_string(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            content_hash: None,
         }
     }
 
@@ -71,6 +75,7 @@ impl Buffer {
             name,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            content_hash: None,
         }
     }
 
@@ -89,11 +94,31 @@ impl Buffer {
             name,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            content_hash: None,
         }
     }
 
     pub fn text_snapshot(&self) -> String {
         self.rope.to_string()
+    }
+
+    /// Compute or return the cached BLAKE3 content hash.
+    pub fn content_hash(&mut self) -> [u8; 32] {
+        if let Some(h) = self.content_hash {
+            return h;
+        }
+        let mut hasher = blake3::Hasher::new();
+        for chunk in self.rope.chunks() {
+            hasher.update(chunk.as_bytes());
+        }
+        let h = *hasher.finalize().as_bytes();
+        self.content_hash = Some(h);
+        h
+    }
+
+    /// Invalidate the cached content hash. Called by mutation methods.
+    fn invalidate_hash(&mut self) {
+        self.content_hash = None;
     }
 
     fn save_undo(&mut self) {
@@ -113,6 +138,7 @@ impl Buffer {
             self.rope = entry.rope_snapshot;
             self.cursor = entry.cursor;
             self.modified = true;
+        self.invalidate_hash();
         }
     }
 
@@ -125,6 +151,7 @@ impl Buffer {
             self.rope = entry.rope_snapshot;
             self.cursor = entry.cursor;
             self.modified = true;
+        self.invalidate_hash();
         }
     }
 
@@ -180,6 +207,7 @@ impl Buffer {
             self.cursor.col += 1;
         }
         self.modified = true;
+        self.invalidate_hash();
         Some(EditInfo {
             start_byte,
             old_end_byte: start_byte,
@@ -215,6 +243,7 @@ impl Buffer {
             self.cursor.col -= 1;
         }
         self.modified = true;
+        self.invalidate_hash();
         Some(EditInfo {
             start_byte,
             old_end_byte,
@@ -238,6 +267,7 @@ impl Buffer {
         self.rope.remove(idx..idx + 1);
         self.clamp_cursor();
         self.modified = true;
+        self.invalidate_hash();
         Some(EditInfo {
             start_byte,
             old_end_byte,
@@ -269,6 +299,7 @@ impl Buffer {
         self.rope.remove(line_start..line_end);
         self.clamp_cursor();
         self.modified = true;
+        self.invalidate_hash();
         Some(EditInfo {
             start_byte,
             old_end_byte,
@@ -424,6 +455,7 @@ impl Buffer {
         self.cursor.line += 1;
         self.cursor.col = 0;
         self.modified = true;
+        self.invalidate_hash();
         Some(EditInfo {
             start_byte,
             old_end_byte: start_byte,
@@ -444,6 +476,7 @@ impl Buffer {
         let new_end_pos = self.position_at_char(line_start + 1);
         self.cursor.col = 0;
         self.modified = true;
+        self.invalidate_hash();
         Some(EditInfo {
             start_byte,
             old_end_byte: start_byte,
@@ -548,6 +581,7 @@ impl Buffer {
             self.cursor.col += text.len();
         }
         self.modified = true;
+        self.invalidate_hash();
     }
 
     /// Paste text before the current line. Returns None — caller should do full re-parse.
@@ -565,6 +599,7 @@ impl Buffer {
             self.rope.insert(idx, text);
         }
         self.modified = true;
+        self.invalidate_hash();
     }
 
     fn cursor_char_idx(&self) -> usize {

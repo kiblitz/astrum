@@ -5,6 +5,7 @@ use crate::file_browser::{scan_directory, FileBrowser, FileBrowserResult};
 use crate::input::{InputHandler, Mode};
 use crate::pane::{FocusDirection, PaneLayout, SplitDirection};
 use crate::renderer::Renderer;
+use crate::swap::SwapManager;
 use crate::syntax::{EditInfo, HighlightCache, HighlightEngine};
 use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseEventKind};
@@ -184,6 +185,7 @@ pub struct Editor {
     jump_forward: Vec<JumpPosition>,
     palette: Option<PaletteState>,
     find_file: Option<FindFileState>,
+    swap_manager: SwapManager,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
 }
@@ -202,6 +204,7 @@ impl Editor {
 
         let input = InputHandler::new(config.keymap);
         let highlight_engine = HighlightEngine::new();
+        let swap_manager = SwapManager::new();
 
         Ok(Self {
             buffers: Vec::new(),
@@ -219,6 +222,7 @@ impl Editor {
             jump_forward: Vec::new(),
             palette: None,
             find_file: None,
+            swap_manager,
             quit_pending: false,
         })
     }
@@ -265,15 +269,23 @@ impl Editor {
             .await?
         {
             Ok(text) => {
-                let buf = Buffer::from_text(&text, path_buf);
+                let mut buf = Buffer::from_text(&text, path_buf);
                 let buf_id = buf.id;
+                let hash = buf.content_hash();
+                if let Some(ref p) = buf.path {
+                    self.swap_manager.register(buf_id, p, hash);
+                }
                 self.buffers.push(buf);
                 self.request_highlight(buf_id);
                 self.pane_layout.active_pane_mut().switch_buffer(buf_id);
             }
             Err(_) => {
-                let buf = Buffer::new_for_path(path_buf);
+                let mut buf = Buffer::new_for_path(path_buf);
                 let buf_id = buf.id;
+                let hash = buf.content_hash();
+                if let Some(ref p) = buf.path {
+                    self.swap_manager.register(buf_id, p, hash);
+                }
                 self.buffers.push(buf);
                 self.pane_layout.active_pane_mut().switch_buffer(buf_id);
                 self.status_message = format!("New file: {}", path);
@@ -325,6 +337,31 @@ impl Editor {
 
     pub async fn run(&mut self) -> Result<()> {
         let mut event_stream = crossterm::event::EventStream::new();
+        let mut swap_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        swap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Check for crash recovery on startup.
+        let stale = self.swap_manager.find_stale_swap_files();
+        if !stale.is_empty() {
+            let count = stale.len();
+            for recovered in stale {
+                let path = recovered.source_path.clone();
+                let mut buf = Buffer::from_text(&recovered.content, path);
+                buf.modified = true;
+                let buf_id = buf.id;
+                let hash = buf.content_hash();
+                if let Some(ref p) = buf.path {
+                    self.swap_manager.register(buf_id, p, hash);
+                }
+                self.buffers.push(buf);
+                self.request_highlight(buf_id);
+                self.pane_layout.active_pane_mut().switch_buffer(buf_id);
+            }
+            self.status_message = format!(
+                "Recovered {} file(s) from swap. Review and :w to save.",
+                count,
+            );
+        }
 
         loop {
             // --- Render ---
@@ -364,47 +401,54 @@ impl Editor {
             }
 
             // --- Event loop ---
-            if let Some(Ok(event)) = event_stream.next().await {
-                match event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.status_message.clear();
+            tokio::select! {
+                maybe_event = event_stream.next() => {
+                    if let Some(Ok(event)) = maybe_event {
+                        match event {
+                            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                                self.status_message.clear();
 
-                        // Overlays intercept all input when open.
-                        if self.find_file.is_some() {
-                            self.handle_find_file_key(key).await?;
-                            continue;
-                        }
-                        if self.palette.is_some() {
-                            self.handle_palette_key(key).await?;
-                            continue;
-                        }
+                                // Overlays intercept all input when open.
+                                if self.find_file.is_some() {
+                                    self.handle_find_file_key(key).await?;
+                                    continue;
+                                }
+                                if self.palette.is_some() {
+                                    self.handle_palette_key(key).await?;
+                                    continue;
+                                }
 
-                        let active_id = self.pane_layout.active_id;
-                        let on_browser_pane = self.file_browsers.contains_key(&active_id);
-                        let in_command_mode = self.input.mode == Mode::Command;
-                        let browser_navigate = on_browser_pane
-                            && !in_command_mode
-                            && self.file_browsers.get(&active_id)
-                                .map_or(false, |fb| fb.input_mode == crate::file_browser::BrowserInputMode::Navigate);
+                                let active_id = self.pane_layout.active_id;
+                                let on_browser_pane = self.file_browsers.contains_key(&active_id);
+                                let in_command_mode = self.input.mode == Mode::Command;
+                                let browser_navigate = on_browser_pane
+                                    && !in_command_mode
+                                    && self.file_browsers.get(&active_id)
+                                        .map_or(false, |fb| fb.input_mode == crate::file_browser::BrowserInputMode::Navigate);
 
-                        if browser_navigate {
-                            self.handle_file_browser_action(key).await?;
-                        } else if on_browser_pane && !in_command_mode {
-                            self.quit_pending = false;
-                            // Filter or NewFile text input mode — raw keys
-                            self.handle_file_browser_raw_key(key).await?;
-                        } else {
-                            let action = self.input.handle_key(key);
-                            self.execute_action(action).await?;
+                                if browser_navigate {
+                                    self.handle_file_browser_action(key).await?;
+                                } else if on_browser_pane && !in_command_mode {
+                                    self.quit_pending = false;
+                                    // Filter or NewFile text input mode — raw keys
+                                    self.handle_file_browser_raw_key(key).await?;
+                                } else {
+                                    let action = self.input.handle_key(key);
+                                    self.execute_action(action).await?;
+                                }
+                            }
+                            Event::Mouse(mouse) => {
+                                if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                                    self.handle_mouse_click(mouse.column, mouse.row).await?;
+                                }
+                            }
+                            Event::Resize(_, _) => {}
+                            _ => {}
                         }
                     }
-                    Event::Mouse(mouse) => {
-                        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-                            self.handle_mouse_click(mouse.column, mouse.row).await?;
-                        }
-                    }
-                    Event::Resize(_, _) => {}
-                    _ => {}
+                }
+                _ = swap_interval.tick() => {
+                    self.flush_swap_files().await;
                 }
             }
 
@@ -858,12 +902,36 @@ impl Editor {
     }
 
     async fn save_current_buffer(&mut self) -> Result<()> {
+        self.save_buffer_impl(false).await
+    }
+
+    async fn force_save_current_buffer(&mut self) -> Result<()> {
+        self.save_buffer_impl(true).await
+    }
+
+    async fn save_buffer_impl(&mut self, force: bool) -> Result<()> {
         let buf_idx = match self.active_buffer_idx() {
             Some(idx) => idx,
             None => return Ok(()),
         };
         if let Some(buf) = self.buffers.get_mut(buf_idx) {
             if let Some(ref path) = buf.path {
+                let buf_id = buf.id;
+
+                // Check for external changes unless force-saving.
+                if !force {
+                    let check_path = path.clone();
+                    if let Some(disk_hash) = tokio::task::spawn_blocking(move || {
+                        crate::swap::hash_file(&check_path)
+                    }).await? {
+                        if self.swap_manager.disk_changed(buf_id, disk_hash) {
+                            self.status_message =
+                                "File changed on disk. Use :w! to force save.".into();
+                            return Ok(());
+                        }
+                    }
+                }
+
                 let text = buf.text_snapshot();
                 let path = path.clone();
                 let name = buf.name.clone();
@@ -872,6 +940,15 @@ impl Editor {
                 {
                     Ok(()) => {
                         buf.modified = false;
+                        let new_hash = buf.content_hash();
+                        self.swap_manager.update_disk_hash(buf_id, new_hash);
+                        self.swap_manager.unregister(buf_id);
+                        // Re-register so future edits get tracked again.
+                        if let Some(ref p) = self.buffers.iter().find(|b| b.id == buf_id)
+                            .and_then(|b| b.path.clone())
+                        {
+                            self.swap_manager.register(buf_id, p, new_hash);
+                        }
                         self.status_message = format!("Saved: {}", name);
                     }
                     Err(e) => {
@@ -944,6 +1021,13 @@ impl Editor {
                     self.save_current_buffer_as(parts[1]).await?;
                 } else {
                     self.save_current_buffer().await?;
+                }
+            }
+            Some("w!") => {
+                if parts.len() > 1 {
+                    self.save_current_buffer_as(parts[1]).await?;
+                } else {
+                    self.force_save_current_buffer().await?;
                 }
             }
             Some("wq") => {
@@ -1057,6 +1141,7 @@ impl Editor {
         let removed_id = removed.id;
         self.highlight_cache.invalidate(removed_id);
         self.highlight_engine.remove_buffer(removed_id);
+        self.swap_manager.unregister(removed_id);
 
         let active_id = self.pane_layout.active_id;
 
@@ -1443,6 +1528,39 @@ impl Editor {
         }
     }
 
+    /// Flush swap files for buffers whose content has changed since the last write.
+    async fn flush_swap_files(&mut self) {
+        let buf_ids = self.swap_manager.registered_buffer_ids();
+        for buf_id in buf_ids {
+            let buf = match self.buffers.iter_mut().find(|b| b.id == buf_id) {
+                Some(b) => b,
+                None => continue,
+            };
+            if !buf.modified {
+                continue;
+            }
+            let hash = buf.content_hash();
+            if !self.swap_manager.needs_swap_write(buf_id, hash) {
+                continue;
+            }
+            let content = buf.text_snapshot();
+            let (swap_path, source_path) = match self.swap_manager.swap_info(buf_id) {
+                Some((s, p)) => (s.to_path_buf(), p.to_path_buf()),
+                None => continue,
+            };
+            let meta_path = match self.swap_manager.meta_path(buf_id) {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+            tokio::task::spawn_blocking(move || {
+                SwapManager::write_swap_file(&swap_path, &meta_path, &source_path, &content);
+            })
+            .await
+            .ok();
+            self.swap_manager.update_swap_hash(buf_id, hash);
+        }
+    }
+
     /// Capture the current state as a jump position.
     fn current_jump_position(&self) -> Option<JumpPosition> {
         let pane_id = self.pane_layout.active_id;
@@ -1540,6 +1658,7 @@ impl Editor {
     }
 
     fn cleanup(&mut self) {
+        self.swap_manager.cleanup_all();
         let _ = terminal::disable_raw_mode();
         let _ = execute!(
             self.terminal.backend_mut(),

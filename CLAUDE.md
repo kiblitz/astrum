@@ -26,8 +26,9 @@ cargo run -- [file...]
 - **input.rs** — Modal input handler (Normal, Insert, Visual, Command modes)
 - **keymap.rs** — Trie-based keymap with multi-key sequences
 - **config.rs** — KDL config loading with default keybindings
-- **syntax.rs** — Async syntax highlighting via syntect + spawn_blocking
+- **syntax.rs** — Tree-sitter incremental syntax highlighting
 - **file_browser.rs** — Tree-style file browser overlay on panes
+- **swap.rs** — Swap file management and external change detection
 
 ## Key Design Decisions
 
@@ -55,6 +56,24 @@ Uses **tree-sitter** for synchronous, incremental parsing. Each edit produces an
 - Files with no grammar get plain (unstyled) highlights
 - Color scheme: One Dark palette
 - `with_buffer_edit` in editor.rs handles the edit→incremental parse→cache update pipeline
+
+### Swap files and external change detection
+Swap files persist unsaved edits to disk for crash recovery. External change detection warns the user if the file on disk was modified by another process.
+
+**Architecture:**
+- **SwapManager** (`swap.rs`) owns per-buffer `SwapEntry` state: source path, disk hash, last swap hash, swap file path
+- Swap files live in `dirs::data_dir()/astrum/swap/` (not next to the source file)
+- Swap file name: BLAKE3 hash of the absolute source path → `<hex>.swp` + `<hex>.meta` (meta stores the original path)
+- Swap file content: plain text only (no cursor/undo state)
+- **Content hashing:** `Buffer` has a lazy `content_hash: Option<[u8; 32]>` field. Every mutation sets it to `None`. Hash is only computed on demand (swap timer tick or before save) via BLAKE3 over ropey chunk iterator (no full string allocation).
+- **Flush frequency:** 2-second tokio interval timer. Only writes if `content_hash != last_swap_hash`.
+- **External change detection:** On save, hash the disk file and compare to `disk_hash` recorded at load time. If different, warn and abort (user can `:w!` to force).
+- **Recovery:** On startup, scan swap dir for `.meta` files. If source file exists and swap content differs from disk, offer `:recover`.
+- **Cleanup:** On normal exit or buffer close, delete the swap file.
+
+**Commands:**
+- `:w!` — force save even if external changes detected
+- `:recover` — restore buffer content from swap file
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.

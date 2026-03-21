@@ -7,6 +7,7 @@ mod input;
 mod keymap;
 mod pane;
 mod renderer;
+mod swap;
 mod syntax;
 
 use anyhow::Result;
