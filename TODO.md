@@ -19,6 +19,8 @@
 - [ ] Relative line numbers
 - [ ] Configurable themes
 
+- [ ] Bracket matching (`%` to jump between matching pairs)
+
 ## Tier 4 — Ambitious
 - [ ] LSP / autocomplete
 - [ ] Git integration (blame, diff)
