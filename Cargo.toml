@@ -1,0 +1,24 @@
+[package]
+name = "astrum"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = "0.29"
+ropey = "1.6"
+futures = "0.3"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+dirs = "6"
+kdl = "6"
+anyhow = "1"
+tokio-util = "0.7"
+unicode-width = "0.2"
+unicode-segmentation = "1.12"
+arboard = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
