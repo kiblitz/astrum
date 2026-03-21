@@ -1049,32 +1049,14 @@ impl Editor {
         }
     }
 
-    /// `:q` behavior: close the pane if splits exist, otherwise close the buffer.
+    /// `:q` behavior: close the pane if splits exist, otherwise quit the app.
     fn quit_current(&mut self, force: bool) {
-        let pane_id = self.pane_layout.active_id;
-
         if !self.pane_layout.is_single() {
-            // Multiple panes — just close the active pane (buffer stays open)
+            let pane_id = self.pane_layout.active_id;
             self.pane_layout.close_active();
             self.file_browsers.remove(&pane_id);
-        } else if self.file_browsers.contains_key(&pane_id) {
-            // Single pane with file browser open — close the browser.
-            // If there's a buffer underneath, return to it.
-            // If not (welcome screen), go to the quit flow.
-            let pane_has_buffer = self.pane_layout.active_pane().buffer_id.is_some();
-            if !pane_has_buffer {
-                // No file underneath — confirm quit without closing the browser
-                // so the user doesn't see the welcome screen flash.
-                if self.confirm_double_quit() {
-                    self.file_browsers.remove(&pane_id);
-                    self.should_quit = true;
-                }
-            } else {
-                self.file_browsers.remove(&pane_id);
-            }
-        } else {
-            // Single pane, no browser — close the buffer.
-            self.close_current_buffer(force);
+        } else if force || self.confirm_double_quit() {
+            self.should_quit = true;
         }
     }
 
