@@ -7,7 +7,7 @@ use crate::pane::{FocusDirection, PaneLayout, SplitDirection};
 use crate::renderer::Renderer;
 use crate::syntax::{HighlightCache, HighlightEngine, HighlightResult};
 use anyhow::Result;
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
 use futures::StreamExt;
@@ -73,6 +73,84 @@ impl PaletteState {
     }
 }
 
+/// Spacemacs-style find-file minibuffer.
+pub struct FindFileState {
+    /// The directory currently being browsed.
+    pub dir: PathBuf,
+    /// User input (the part after the directory path).
+    pub input: String,
+    /// Entries in the current directory.
+    pub entries: Vec<crate::file_browser::DirEntry>,
+    /// Indices of entries matching the input.
+    pub filtered: Vec<usize>,
+    /// Selected index within filtered results.
+    pub selected: usize,
+}
+
+impl FindFileState {
+    fn new(dir: PathBuf) -> Self {
+        let mut entries = vec![crate::file_browser::DirEntry {
+            name: ".".to_string(),
+            path: dir.clone(),
+            is_dir: true,
+            size: 0,
+        }];
+        entries.extend(crate::file_browser::scan_directory(&dir));
+        let filtered: Vec<usize> = (0..entries.len()).collect();
+        Self { dir, input: String::new(), entries, filtered, selected: 0 }
+    }
+
+    fn refilter(&mut self) {
+        if self.input.is_empty() {
+            self.filtered = (0..self.entries.len()).collect();
+        } else {
+            let lower = self.input.to_lowercase();
+            self.filtered = self.entries.iter().enumerate()
+                .filter(|(_, e)| e.name.to_lowercase().contains(&lower))
+                .map(|(i, _)| i)
+                .collect();
+        }
+        if self.selected >= self.filtered.len() {
+            self.selected = self.filtered.len().saturating_sub(1);
+        }
+    }
+
+    fn selected_entry(&self) -> Option<&crate::file_browser::DirEntry> {
+        self.filtered.get(self.selected).map(|&i| &self.entries[i])
+    }
+
+    /// True if the selected entry is the "." (current directory) entry.
+    fn is_dot_selected(&self) -> bool {
+        self.selected_entry().map_or(false, |e| e.name == ".")
+    }
+
+    /// Navigate into a subdirectory, rescan, and clear input.
+    fn enter_dir(&mut self, path: &std::path::Path) {
+        self.dir = path.to_path_buf();
+        let mut entries = vec![crate::file_browser::DirEntry {
+            name: ".".to_string(),
+            path: self.dir.clone(),
+            is_dir: true,
+            size: 0,
+        }];
+        entries.extend(crate::file_browser::scan_directory(&self.dir));
+        self.input.clear();
+        self.entries = entries;
+        self.filtered = (0..self.entries.len()).collect();
+        self.selected = 0;
+    }
+
+    /// Display path shown in the input line.
+    pub fn display_path(&self) -> String {
+        let mut s = self.dir.to_string_lossy().to_string();
+        if !s.ends_with('/') && !s.ends_with('\\') {
+            s.push(std::path::MAIN_SEPARATOR);
+        }
+        s.push_str(&self.input);
+        s
+    }
+}
+
 /// A position in the jump history.
 #[derive(Debug, Clone)]
 enum JumpPosition {
@@ -107,6 +185,9 @@ pub struct Editor {
     jump_back: Vec<JumpPosition>,
     jump_forward: Vec<JumpPosition>,
     palette: Option<PaletteState>,
+    find_file: Option<FindFileState>,
+    /// Set after the first `:q` on the last pane. Cleared by any substantive action.
+    quit_pending: bool,
 }
 
 impl Editor {
@@ -142,6 +223,8 @@ impl Editor {
             jump_back: Vec::new(),
             jump_forward: Vec::new(),
             palette: None,
+            find_file: None,
+            quit_pending: false,
         })
     }
 
@@ -150,6 +233,15 @@ impl Editor {
     fn active_buffer(&self) -> Option<&Buffer> {
         let bid = self.pane_layout.active_pane().buffer_id?;
         self.buffers.iter().find(|b| b.id == bid)
+    }
+
+    /// Get the active pane's viewport height (set by the renderer each frame).
+    fn active_viewport_height(&self) -> usize {
+        let h = self.pane_layout.active_pane().height.get();
+        if h > 0 { h as usize } else {
+            // Fallback before first render.
+            self.terminal.size().map(|s| s.height.saturating_sub(4) as usize).unwrap_or(24)
+        }
     }
 
     fn active_buffer_idx(&self) -> Option<usize> {
@@ -252,15 +344,16 @@ impl Editor {
                 let file_browsers = &self.file_browsers;
 
                 let palette = &self.palette;
+                let find_file = &self.find_file;
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
-                        &pending_hints, hl_cache, file_browsers, palette,
+                        &pending_hints, hl_cache, file_browsers, palette, find_file,
                     );
                 })?;
             }
 
-            // Cursor style — steady block if active pane has a browser
+            // Cursor style per mode.
             if self.file_browsers.contains_key(&self.pane_layout.active_id) {
                 execute!(io::stdout(), cursor::SetCursorStyle::SteadyBlock)?;
             } else {
@@ -282,7 +375,11 @@ impl Editor {
                             Event::Key(key) if key.kind == KeyEventKind::Press => {
                                 self.status_message.clear();
 
-                                // Command palette intercepts all input when open.
+                                // Overlays intercept all input when open.
+                                if self.find_file.is_some() {
+                                    self.handle_find_file_key(key).await?;
+                                    continue;
+                                }
                                 if self.palette.is_some() {
                                     self.handle_palette_key(key).await?;
                                     continue;
@@ -299,11 +396,17 @@ impl Editor {
                                 if browser_navigate {
                                     self.handle_file_browser_action(key).await?;
                                 } else if on_browser_pane && !in_command_mode {
+                                    self.quit_pending = false;
                                     // Filter or NewFile text input mode — raw keys
                                     self.handle_file_browser_raw_key(key).await?;
                                 } else {
                                     let action = self.input.handle_key(key);
                                     self.execute_action(action).await?;
+                                }
+                            }
+                            Event::Mouse(mouse) => {
+                                if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                                    self.handle_mouse_click(mouse.column, mouse.row).await?;
                                 }
                             }
                             Event::Resize(_, _) => {}
@@ -321,7 +424,7 @@ impl Editor {
             }
         }
 
-        self.cleanup()?;
+        self.cleanup();
         Ok(())
     }
 
@@ -336,7 +439,8 @@ impl Editor {
             return Ok(());
         }
 
-        let viewport_height = self.terminal.size()?.height.saturating_sub(5) as usize;
+        // Browser has a 2-line header (path + separator), so subtract that.
+        let viewport_height = self.active_viewport_height().saturating_sub(2);
         let pane_id = self.pane_layout.active_id;
         let count = self.input.count_prefix.take().unwrap_or(1);
 
@@ -351,50 +455,7 @@ impl Editor {
             return Ok(());
         };
 
-        match result {
-            FileBrowserResult::OpenFile(path) => {
-                if let Some((dir, sel, scroll)) = &old_state {
-                    self.push_browser_jump(dir.clone(), *sel, *scroll);
-                }
-                self.file_browsers.remove(&pane_id);
-                let path_str = path.to_string_lossy().to_string();
-                self.open_file(&path_str).await?;
-            }
-            FileBrowserResult::CreateFile(path) => {
-                if let Some((dir, sel, scroll)) = &old_state {
-                    self.push_browser_jump(dir.clone(), *sel, *scroll);
-                }
-                self.file_browsers.remove(&pane_id);
-                let path_str = path.to_string_lossy().to_string();
-                self.open_file(&path_str).await?;
-                self.input.mode = Mode::Insert;
-            }
-            FileBrowserResult::Close => {
-                if !self.pane_layout.is_single() {
-                    let old_id = self.pane_layout.active_id;
-                    self.pane_layout.close_active();
-                    self.file_browsers.remove(&old_id);
-                } else {
-                    let pane_has_buffer = self.pane_layout.active_pane().buffer_id.is_some();
-                    if pane_has_buffer || !self.buffers.is_empty() {
-                        self.file_browsers.remove(&pane_id);
-                    }
-                }
-            }
-            FileBrowserResult::NeedsScan => {
-                if let Some((dir, sel, scroll)) = &old_state {
-                    self.push_browser_jump(dir.clone(), *sel, *scroll);
-                }
-                self.scan_current_browser_dir().await?;
-            }
-            FileBrowserResult::PassThrough => {
-                // Action not handled by browser — pass to normal execution.
-                self.execute_action(action).await?;
-            }
-            FileBrowserResult::Noop => {}
-        }
-
-        Ok(())
+        self.handle_browser_result(result, old_state, pane_id, Some(action)).await
     }
 
     /// Handle raw key events for browser text input modes (Filter, NewFile).
@@ -402,7 +463,7 @@ impl Editor {
         &mut self,
         key: crossterm::event::KeyEvent,
     ) -> Result<()> {
-        let viewport_height = self.terminal.size()?.height.saturating_sub(5) as usize;
+        let viewport_height = self.active_viewport_height().saturating_sub(2);
         let pane_id = self.pane_layout.active_id;
 
         let old_state = self.file_browsers.get(&pane_id)
@@ -416,39 +477,86 @@ impl Editor {
             return Ok(());
         };
 
+        self.handle_browser_result(result, old_state, pane_id, None).await
+    }
+
+    /// Shared handler for FileBrowserResult from both navigate and raw key modes.
+    async fn handle_browser_result(
+        &mut self,
+        result: FileBrowserResult,
+        old_state: Option<(PathBuf, usize, usize)>,
+        pane_id: usize,
+        action: Option<Action>,
+    ) -> Result<()> {
+        // Any browser result other than PassThrough (which goes through
+        // execute_action, which has its own quit_pending logic) is a
+        // substantive browser action that should cancel a pending quit.
+        if !matches!(result, FileBrowserResult::PassThrough | FileBrowserResult::Noop) {
+            self.quit_pending = false;
+        }
         match result {
             FileBrowserResult::OpenFile(path) => {
-                if let Some((dir, sel, scroll)) = &old_state {
-                    self.push_browser_jump(dir.clone(), *sel, *scroll);
+                if let Some((dir, sel, scroll)) = old_state {
+                    self.push_browser_jump(dir, sel, scroll);
                 }
                 self.file_browsers.remove(&pane_id);
                 let path_str = path.to_string_lossy().to_string();
                 self.open_file(&path_str).await?;
             }
             FileBrowserResult::CreateFile(path) => {
-                if let Some((dir, sel, scroll)) = &old_state {
-                    self.push_browser_jump(dir.clone(), *sel, *scroll);
+                if let Some((dir, sel, scroll)) = old_state {
+                    self.push_browser_jump(dir, sel, scroll);
                 }
                 self.file_browsers.remove(&pane_id);
                 let path_str = path.to_string_lossy().to_string();
                 self.open_file(&path_str).await?;
                 self.input.mode = Mode::Insert;
             }
+            FileBrowserResult::Close => {
+                if !self.pane_layout.is_single() {
+                    self.pane_layout.close_active();
+                    self.file_browsers.remove(&pane_id);
+                } else {
+                    let pane_has_buffer = self.pane_layout.active_pane().buffer_id.is_some();
+                    if pane_has_buffer || !self.buffers.is_empty() {
+                        self.file_browsers.remove(&pane_id);
+                    }
+                }
+            }
             FileBrowserResult::NeedsScan => {
-                if let Some((dir, sel, scroll)) = &old_state {
-                    self.push_browser_jump(dir.clone(), *sel, *scroll);
+                if let Some((dir, sel, scroll)) = old_state {
+                    self.push_browser_jump(dir, sel, scroll);
                 }
                 self.scan_current_browser_dir().await?;
             }
+            FileBrowserResult::PassThrough => {
+                if let Some(action) = action {
+                    self.execute_action(action).await?;
+                }
+            }
             FileBrowserResult::Noop => {}
-            _ => {}
         }
 
         Ok(())
     }
 
     async fn execute_action(&mut self, action: Action) -> Result<()> {
-        let viewport_height = self.terminal.size()?.height.saturating_sub(3) as usize;
+        // Clear quit_pending on any action that isn't part of the :q flow.
+        // EnterCommandMode (`:`), ExecuteCommand (the enter after `:q`),
+        // and the quit actions themselves must NOT clear it.
+        if !matches!(
+            action,
+            Action::Noop
+                | Action::Quit
+                | Action::ForceQuit
+                | Action::QuitAll
+                | Action::ForceQuitAll
+                | Action::EnterCommandMode
+                | Action::ExecuteCommand(_)
+        ) {
+            self.quit_pending = false;
+        }
+        let viewport_height = self.active_viewport_height();
         let mut needs_rehighlight = false;
 
         match action {
@@ -677,10 +785,12 @@ impl Editor {
 
             // File browser
             Action::OpenFileBrowser => {
-                let pane_id = self.pane_layout.active_id;
-                if !self.file_browsers.contains_key(&pane_id) {
-                    self.push_jump();
-                    let dir = if let Some(buf) = self.active_buffer() {
+                if self.find_file.is_none() {
+                    let pane_id = self.pane_layout.active_id;
+                    let dir = if let Some(fb) = self.file_browsers.get(&pane_id) {
+                        // Start at the file browser's current directory.
+                        fb.current_dir.clone()
+                    } else if let Some(buf) = self.active_buffer() {
                         buf.path
                             .as_ref()
                             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -688,17 +798,17 @@ impl Editor {
                     } else {
                         std::env::current_dir().unwrap_or_default()
                     };
-                    self.open_file_browser(dir).await?;
+                    self.find_file = Some(FindFileState::new(dir));
+                    execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
             }
             Action::OpenFileBrowserHome => {
-                let pane_id = self.pane_layout.active_id;
-                if !self.file_browsers.contains_key(&pane_id) {
-                    self.push_jump();
+                if self.find_file.is_none() {
                     let dir = dirs::home_dir().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_default()
                     });
-                    self.open_file_browser(dir).await?;
+                    self.find_file = Some(FindFileState::new(dir));
+                    execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
             }
 
@@ -833,6 +943,11 @@ impl Editor {
 
     async fn execute_command(&mut self, cmd: &str) -> Result<()> {
         let parts: Vec<&str> = cmd.trim().splitn(2, ' ').collect();
+        // Clear quit_pending for any command that isn't a quit variant.
+        let is_quit_cmd = matches!(parts.first().copied(), Some("q" | "q!" | "qa" | "qa!" | "wq"));
+        if !is_quit_cmd {
+            self.quit_pending = false;
+        }
         match parts.first().copied() {
             Some("q") => {
                 self.quit_current(false);
@@ -922,37 +1037,65 @@ impl Editor {
         Ok(())
     }
 
+    /// Returns true if the user has confirmed the double-quit (second :q with no
+    /// substantive action in between). Otherwise sets the pending state and returns false.
+    fn confirm_double_quit(&mut self) -> bool {
+        if self.quit_pending {
+            true
+        } else {
+            self.quit_pending = true;
+            self.status_message = "Press :q again to quit".into();
+            false
+        }
+    }
+
     /// `:q` behavior: close the pane if splits exist, otherwise close the buffer.
     fn quit_current(&mut self, force: bool) {
+        let pane_id = self.pane_layout.active_id;
+
         if !self.pane_layout.is_single() {
             // Multiple panes — just close the active pane (buffer stays open)
-            let old_id = self.pane_layout.active_id;
             self.pane_layout.close_active();
-            self.file_browsers.remove(&old_id);
+            self.file_browsers.remove(&pane_id);
+        } else if self.file_browsers.contains_key(&pane_id) {
+            // Single pane with file browser open — close the browser.
+            // If there's a buffer underneath, return to it.
+            // If not (welcome screen), go to the quit flow.
+            let pane_has_buffer = self.pane_layout.active_pane().buffer_id.is_some();
+            if !pane_has_buffer {
+                // No file underneath — confirm quit without closing the browser
+                // so the user doesn't see the welcome screen flash.
+                if self.confirm_double_quit() {
+                    self.file_browsers.remove(&pane_id);
+                    self.should_quit = true;
+                }
+            } else {
+                self.file_browsers.remove(&pane_id);
+            }
         } else {
-            // Single pane — close the buffer
+            // Single pane, no browser — close the buffer.
             self.close_current_buffer(force);
         }
     }
 
     fn close_current_buffer(&mut self, force: bool) {
-        if self.buffers.is_empty() {
-            // Already on welcome screen, just quit the app
-            self.should_quit = true;
+        if self.buffers.is_empty() || self.active_buffer_idx().is_none() {
+            if self.pane_layout.is_single() && self.confirm_double_quit() {
+                self.should_quit = true;
+            }
             return;
         }
-        let buf_idx = match self.active_buffer_idx() {
-            Some(idx) => idx,
-            None => {
-                // Pane has no buffer; if single pane, quit
-                if self.pane_layout.is_single() {
-                    self.should_quit = true;
-                }
-                return;
-            }
-        };
+        let buf_idx = self.active_buffer_idx().unwrap();
         if !force && self.buffers[buf_idx].modified {
             self.status_message = "Buffer has unsaved changes. Use :q! to force close".into();
+            return;
+        }
+        // If this is the last buffer on the last pane, require double-quit
+        // instead of removing the buffer (which would show the welcome screen).
+        if self.buffers.len() == 1 && self.pane_layout.is_single() {
+            if self.confirm_double_quit() {
+                self.should_quit = true;
+            }
             return;
         }
         let removed = self.buffers.remove(buf_idx);
@@ -985,15 +1128,16 @@ impl Editor {
                 }
             }
             if !restored {
-                let pane = self.pane_layout.active_pane_mut();
                 if !self.buffers.is_empty() {
+                    let pane = self.pane_layout.active_pane_mut();
                     let new_buf_id =
                         self.buffers[self.buffers.len().saturating_sub(1)].id;
                     pane.switch_buffer(new_buf_id);
-                } else {
-                    pane.buffer_id = None;
-                    pane.cursor = crate::buffer::Cursor::default();
-                    pane.scroll_offset = 0;
+                } else if self.pane_layout.is_single() {
+                    // Last buffer on last pane — require a second :q to exit.
+                    self.quit_pending = true;
+                    self.status_message = "Press :q again to quit".into();
+                    return;
                 }
             }
         }
@@ -1090,6 +1234,183 @@ impl Editor {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_find_file_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Result<()> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_find_file()?;
+            }
+            KeyCode::Enter => {
+                if let Some(mut ff) = self.find_file.take() {
+                    if ff.is_dot_selected() {
+                        // "." → open tree browser at current directory.
+                        let dir = ff.dir.clone();
+                        self.push_jump();
+                        self.open_file_browser(dir).await?;
+                    } else if let Some(entry) = ff.selected_entry().cloned() {
+                        if entry.is_dir {
+                            ff.enter_dir(&entry.path);
+                            self.find_file = Some(ff);
+                        } else {
+                            // Close any file browser on this pane before opening the file.
+                            let pane_id = self.pane_layout.active_id;
+                            self.file_browsers.remove(&pane_id);
+                            self.push_jump();
+                            let path_str = entry.path.to_string_lossy().to_string();
+                            self.open_file(&path_str).await?;
+                        }
+                    } else if !ff.input.is_empty() {
+                        let new_path = ff.dir.join(&ff.input);
+                        if let Some(parent) = new_path.parent() {
+                            std::fs::create_dir_all(parent).ok();
+                        }
+                        let pane_id = self.pane_layout.active_id;
+                        self.file_browsers.remove(&pane_id);
+                        self.push_jump();
+                        let path_str = new_path.to_string_lossy().to_string();
+                        self.open_file(&path_str).await?;
+                        self.input.mode = Mode::Insert;
+                    }
+                }
+            }
+            KeyCode::Tab => {
+                // Tab completes to the selected entry.
+                if let Some(ref mut ff) = self.find_file {
+                    if let Some(entry) = ff.selected_entry().cloned() {
+                        if entry.is_dir {
+                            ff.enter_dir(&entry.path);
+                        } else {
+                            ff.input = entry.name.clone();
+                            ff.refilter();
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut ff) = self.find_file {
+                    if ff.input.is_empty() {
+                        // Go up a directory.
+                        if let Some(parent) = ff.dir.parent().map(|p| p.to_path_buf()) {
+                            ff.enter_dir(&parent);
+                        }
+                    } else {
+                        ff.input.pop();
+                        ff.refilter();
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
+                if let Some(ref mut ff) = self.find_file {
+                    ff.selected = ff.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
+                if let Some(ref mut ff) = self.find_file {
+                    if ff.selected + 1 < ff.filtered.len() {
+                        ff.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(ref mut ff) = self.find_file {
+                    if c == '/' || c == '\\' {
+                        if let Some(entry) = ff.selected_entry().cloned() {
+                            if entry.is_dir {
+                                ff.enter_dir(&entry.path);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    ff.input.push(c);
+                    ff.refilter();
+                }
+            }
+            _ => {}
+        }
+        // Disable mouse capture when find-file closes.
+        if self.find_file.is_none() {
+            execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+        }
+        Ok(())
+    }
+
+    fn close_find_file(&mut self) -> Result<()> {
+        self.find_file = None;
+        execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+        Ok(())
+    }
+
+    async fn handle_mouse_click(&mut self, col: u16, row: u16) -> Result<()> {
+        // Only handle clicks on find-file overlay for now.
+        if let Some(ref mut ff) = self.find_file {
+            let size = self.terminal.size()?;
+            // Replicate the popup geometry from render_find_file.
+            let width = (size.width * 3 / 5).max(40).min(size.width.saturating_sub(4));
+            let max_height = (size.height * 7 / 10).max(10).min(size.height.saturating_sub(2));
+            let x = (size.width.saturating_sub(width)) / 2;
+            let y = (size.height.saturating_sub(max_height)) / 2;
+
+            // Inner area (1px border on each side).
+            let inner_x = x + 1;
+            let inner_y = y + 1;
+            let inner_w = width.saturating_sub(2);
+            let inner_h = max_height.saturating_sub(2);
+
+            if inner_h < 2 || inner_w < 4 {
+                return Ok(());
+            }
+
+            // List area starts 1 row below the input line.
+            let list_y = inner_y + 1;
+            let list_h = inner_h.saturating_sub(1);
+
+            // Check if click is within the list area.
+            if col >= inner_x && col < inner_x + inner_w
+                && row >= list_y && row < list_y + list_h
+            {
+                let visible_count = list_h as usize;
+                let scroll_offset = if ff.selected >= visible_count {
+                    ff.selected - visible_count + 1
+                } else {
+                    0
+                };
+                let clicked_index = scroll_offset + (row - list_y) as usize;
+                if clicked_index < ff.filtered.len() {
+                    ff.selected = clicked_index;
+                    // Simulate Enter on the clicked entry.
+                    let ff = self.find_file.take().unwrap();
+                    if ff.is_dot_selected() {
+                        let dir = ff.dir.clone();
+                        self.push_jump();
+                        self.open_file_browser(dir).await?;
+                    } else if let Some(entry) = ff.selected_entry().cloned() {
+                        if entry.is_dir {
+                            let mut ff = ff;
+                            ff.enter_dir(&entry.path);
+                            self.find_file = Some(ff);
+                        } else {
+                            let pane_id = self.pane_layout.active_id;
+                            self.file_browsers.remove(&pane_id);
+                            self.push_jump();
+                            let path_str = entry.path.to_string_lossy().to_string();
+                            self.open_file(&path_str).await?;
+                        }
+                    }
+                }
+            }
+        }
+        if self.find_file.is_none() {
+            execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
         }
         Ok(())
     }
@@ -1213,15 +1534,15 @@ impl Editor {
         }
     }
 
-    fn cleanup(&mut self) -> Result<()> {
-        terminal::disable_raw_mode()?;
-        execute!(
+    fn cleanup(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(
             self.terminal.backend_mut(),
+            crossterm::event::DisableMouseCapture,
             LeaveAlternateScreen,
             cursor::SetCursorStyle::DefaultUserShape
-        )?;
-        self.terminal.show_cursor()?;
-        Ok(())
+        );
+        let _ = self.terminal.show_cursor();
     }
 }
 

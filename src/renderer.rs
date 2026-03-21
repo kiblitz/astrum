@@ -1,5 +1,5 @@
 use crate::buffer::{Buffer, Cursor};
-use crate::editor::PaletteState;
+use crate::editor::{FindFileState, PaletteState};
 use crate::file_browser::{format_size, BrowserInputMode, FileBrowser};
 use crate::input::Mode;
 use crate::pane::{LayoutNode, PaneLayout, SplitDirection};
@@ -31,8 +31,10 @@ impl Renderer {
         highlight_cache: &HighlightCache,
         file_browsers: &HashMap<usize, FileBrowser>,
         palette: &Option<PaletteState>,
+        find_file: &Option<FindFileState>,
     ) {
         let size = frame.area();
+        let has_overlay = find_file.is_some() || palette.is_some();
 
         // Compute active_buf_idx from pane_layout
         let active_buf_idx = pane_layout
@@ -69,7 +71,8 @@ impl Renderer {
         // Main area: always render panes, overlay file browsers on their panes
         let active_fb = file_browsers.get(&pane_layout.active_id);
         if !buffers.is_empty() || !pane_layout.is_single() {
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers);
+            let show_cursor = !has_overlay;
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor);
             // Status line
             if let Some(fb) = active_fb {
                 self.render_file_browser_status(frame, chunks[2], fb);
@@ -101,9 +104,35 @@ impl Renderer {
             active_fb,
         );
 
-        // Command palette overlay
+        // Overlays
+        if let Some(ff) = find_file {
+            self.render_find_file(frame, size, ff);
+        }
         if let Some(palette) = palette {
             self.render_palette(frame, size, palette);
+        }
+
+        // Cursor positioning: only set cursor when it should be visible.
+        // Overlays hide the cursor, so skip positioning entirely for them.
+        if !has_overlay {
+            if *mode == Mode::Command {
+                let x = chunks[3].x + 1 + command_buffer.len() as u16;
+                frame.set_cursor_position((x, chunks[3].y));
+            } else if let Some(fb) = active_fb {
+                match fb.input_mode {
+                    BrowserInputMode::Filter => {
+                        let x = chunks[3].x + 1 + fb.filter.len() as u16;
+                        frame.set_cursor_position((x, chunks[3].y));
+                    }
+                    BrowserInputMode::NewFile => {
+                        let x = chunks[3].x + 10 + fb.new_file_name.len() as u16;
+                        frame.set_cursor_position((x, chunks[3].y));
+                    }
+                    _ => {}
+                }
+            }
+            // else: render_editor already set cursor position for active buffer,
+            // or no buffer means no cursor (ratatui hides it by default).
         }
     }
 
@@ -118,6 +147,7 @@ impl Renderer {
         buffers: &[Buffer],
         highlight_cache: &HighlightCache,
         file_browsers: &HashMap<usize, FileBrowser>,
+        show_cursor: bool,
     ) {
         match node {
             LayoutNode::Leaf(pane_id) => {
@@ -145,11 +175,14 @@ impl Renderer {
                         (area, None)
                     };
 
+                    // Store the content height for viewport calculations.
+                    pane.height.set(content_area.height);
+
                     // File browser renders on its owning pane
                     if let Some(fb) = pane_fb {
                         self.render_file_browser(frame, content_area, fb);
                     } else if let Some(buf) = pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
-                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache);
+                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor);
                     } else {
                         self.render_welcome(frame, content_area);
                     }
@@ -201,7 +234,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -235,7 +268,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor);
                             y_offset += h;
 
                             if i + 1 < children.len() {
@@ -400,7 +433,7 @@ impl Renderer {
                 let entry = &fb.entries[entry_idx];
                 let is_selected = idx == fb.selected;
 
-                let icon = if entry.is_dir { " " } else { " " };
+                let icon = " ";
                 let suffix = if entry.is_dir { "/" } else { "" };
 
                 let name_style = if is_selected {
@@ -569,6 +602,7 @@ impl Renderer {
         scroll_offset: usize,
         is_active: bool,
         highlight_cache: &HighlightCache,
+        show_cursor: bool,
     ) {
         let editor_height = area.height as usize;
         let line_num_width = buf.line_count().to_string().len().max(3);
@@ -643,8 +677,8 @@ impl Renderer {
 
         frame.render_widget(Paragraph::new(editor_lines), editor_chunks[1]);
 
-        // Cursor — only for active pane
-        if is_active {
+        // Cursor — only for active pane when no overlay is covering it
+        if is_active && show_cursor {
             let cursor_x = editor_chunks[1].x + cursor.col as u16;
             let cursor_y = editor_chunks[1].y + (cursor.line.saturating_sub(scroll_offset)) as u16;
             if cursor_x < editor_chunks[1].x + editor_chunks[1].width
@@ -792,6 +826,89 @@ impl Renderer {
         };
 
         frame.render_widget(Paragraph::new(content), area);
+    }
+
+    fn render_find_file(&self, frame: &mut Frame, area: Rect, ff: &FindFileState) {
+        // Centered popup, same dimensions as palette.
+        let width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
+        let max_height = (area.height * 7 / 10).max(10).min(area.height.saturating_sub(2));
+        let x = (area.width.saturating_sub(width)) / 2;
+        let y = (area.height.saturating_sub(max_height)) / 2;
+        let popup_area = Rect::new(x, y, width, max_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Find File ")
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        if inner.height < 2 || inner.width < 4 {
+            return;
+        }
+
+        // Path input line.
+        let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+        let display_path = ff.display_path();
+        // Show the tail that fits in the width, so the cursor end is always visible.
+        let visible_len = inner.width.saturating_sub(2) as usize;
+        let path_display = if display_path.len() > visible_len {
+            &display_path[display_path.len() - visible_len..]
+        } else {
+            &display_path
+        };
+        let input_line = Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::Cyan)),
+            Span::raw(path_display),
+        ]);
+        frame.render_widget(Paragraph::new(input_line), input_area);
+
+        // Completions list.
+        let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height.saturating_sub(1));
+        let visible_count = list_area.height as usize;
+
+        let scroll_offset = if ff.selected >= visible_count {
+            ff.selected - visible_count + 1
+        } else {
+            0
+        };
+
+        let mut lines = Vec::new();
+        for (i, &entry_idx) in ff.filtered.iter().skip(scroll_offset).take(visible_count).enumerate() {
+            let entry = &ff.entries[entry_idx];
+            let is_selected = i + scroll_offset == ff.selected;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            let icon = if entry.is_dir { "/" } else { "" };
+            let name = format!("{}{}", entry.name, icon);
+
+            // Pad to full width.
+            let available = list_area.width as usize;
+            let padded = if name.len() < available {
+                format!("{}{}", name, " ".repeat(available - name.len()))
+            } else {
+                name[..available].to_string()
+            };
+
+            lines.push(Line::from(Span::styled(padded, style)));
+        }
+
+        // If no matches, show a "create" hint.
+        if ff.filtered.is_empty() && !ff.input.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("  Press Enter to create \"{}\"", ff.input),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines), list_area);
     }
 
     fn render_palette(&self, frame: &mut Frame, area: Rect, palette: &PaletteState) {

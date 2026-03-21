@@ -1,4 +1,5 @@
 use crate::buffer::Cursor;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -17,6 +18,8 @@ pub struct Pane {
     pub cursor: Cursor,
     pub scroll_offset: usize,
     cursor_cache: HashMap<usize, (Cursor, usize)>,
+    /// Content height in rows (updated by the renderer each frame).
+    pub height: Cell<u16>,
 }
 
 impl Pane {
@@ -27,6 +30,7 @@ impl Pane {
             cursor: Cursor::default(),
             scroll_offset: 0,
             cursor_cache: HashMap::new(),
+            height: Cell::new(0),
         }
     }
 
