@@ -5,7 +5,7 @@ use crate::file_browser::{scan_directory, FileBrowser, FileBrowserResult};
 use crate::input::{InputHandler, Mode};
 use crate::pane::{FocusDirection, PaneLayout, SplitDirection};
 use crate::renderer::Renderer;
-use crate::syntax::{HighlightCache, HighlightEngine, HighlightResult};
+use crate::syntax::{EditInfo, HighlightCache, HighlightEngine};
 use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -16,7 +16,6 @@ use ratatui::Terminal;
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
-use tokio::sync::mpsc;
 
 /// State for the command palette (SPC SPC).
 pub struct PaletteState {
@@ -176,7 +175,6 @@ pub struct Editor {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     highlight_engine: HighlightEngine,
     highlight_cache: HighlightCache,
-    highlight_rx: mpsc::Receiver<HighlightResult>,
     /// Per-pane file browsers. Key is the pane id.
     file_browsers: HashMap<usize, FileBrowser>,
     status_message: String,
@@ -202,10 +200,8 @@ impl Editor {
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
 
-        let (highlight_tx, highlight_rx) = mpsc::channel(32);
-
         let input = InputHandler::new(config.keymap);
-        let highlight_engine = HighlightEngine::new(&config.general.theme, highlight_tx);
+        let highlight_engine = HighlightEngine::new();
 
         Ok(Self {
             buffers: Vec::new(),
@@ -215,7 +211,6 @@ impl Editor {
             terminal,
             highlight_engine,
             highlight_cache: HighlightCache::new(),
-            highlight_rx,
             file_browsers: HashMap::new(),
             status_message: String::new(),
             should_quit: false,
@@ -272,8 +267,8 @@ impl Editor {
             Ok(text) => {
                 let buf = Buffer::from_text(&text, path_buf);
                 let buf_id = buf.id;
-                self.request_highlight(&buf);
                 self.buffers.push(buf);
+                self.request_highlight(buf_id);
                 self.pane_layout.active_pane_mut().switch_buffer(buf_id);
             }
             Err(_) => {
@@ -294,12 +289,13 @@ impl Editor {
         self.pane_layout.active_pane_mut().switch_buffer(buf_id);
     }
 
-    fn request_highlight(&self, buf: &Buffer) {
-        self.highlight_engine.request_highlight(
-            buf.id,
-            buf.text_snapshot(),
-            buf.path.clone(),
-        );
+    fn request_highlight(&mut self, buf_id: usize) {
+        if let Some(buf) = self.buffers.iter().find(|b| b.id == buf_id) {
+            let source = buf.text_snapshot();
+            let path = buf.path.clone();
+            let highlights = self.highlight_engine.parse_full(buf_id, &source, path.as_deref());
+            self.highlight_cache.insert(buf_id, highlights);
+        }
     }
 
     async fn open_file_browser(&mut self, dir: PathBuf) -> Result<()> {
@@ -368,54 +364,47 @@ impl Editor {
             }
 
             // --- Event loop ---
-            tokio::select! {
-                maybe_event = event_stream.next() => {
-                    if let Some(Ok(event)) = maybe_event {
-                        match event {
-                            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                                self.status_message.clear();
+            if let Some(Ok(event)) = event_stream.next().await {
+                match event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.status_message.clear();
 
-                                // Overlays intercept all input when open.
-                                if self.find_file.is_some() {
-                                    self.handle_find_file_key(key).await?;
-                                    continue;
-                                }
-                                if self.palette.is_some() {
-                                    self.handle_palette_key(key).await?;
-                                    continue;
-                                }
+                        // Overlays intercept all input when open.
+                        if self.find_file.is_some() {
+                            self.handle_find_file_key(key).await?;
+                            continue;
+                        }
+                        if self.palette.is_some() {
+                            self.handle_palette_key(key).await?;
+                            continue;
+                        }
 
-                                let active_id = self.pane_layout.active_id;
-                                let on_browser_pane = self.file_browsers.contains_key(&active_id);
-                                let in_command_mode = self.input.mode == Mode::Command;
-                                let browser_navigate = on_browser_pane
-                                    && !in_command_mode
-                                    && self.file_browsers.get(&active_id)
-                                        .map_or(false, |fb| fb.input_mode == crate::file_browser::BrowserInputMode::Navigate);
+                        let active_id = self.pane_layout.active_id;
+                        let on_browser_pane = self.file_browsers.contains_key(&active_id);
+                        let in_command_mode = self.input.mode == Mode::Command;
+                        let browser_navigate = on_browser_pane
+                            && !in_command_mode
+                            && self.file_browsers.get(&active_id)
+                                .map_or(false, |fb| fb.input_mode == crate::file_browser::BrowserInputMode::Navigate);
 
-                                if browser_navigate {
-                                    self.handle_file_browser_action(key).await?;
-                                } else if on_browser_pane && !in_command_mode {
-                                    self.quit_pending = false;
-                                    // Filter or NewFile text input mode — raw keys
-                                    self.handle_file_browser_raw_key(key).await?;
-                                } else {
-                                    let action = self.input.handle_key(key);
-                                    self.execute_action(action).await?;
-                                }
-                            }
-                            Event::Mouse(mouse) => {
-                                if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-                                    self.handle_mouse_click(mouse.column, mouse.row).await?;
-                                }
-                            }
-                            Event::Resize(_, _) => {}
-                            _ => {}
+                        if browser_navigate {
+                            self.handle_file_browser_action(key).await?;
+                        } else if on_browser_pane && !in_command_mode {
+                            self.quit_pending = false;
+                            // Filter or NewFile text input mode — raw keys
+                            self.handle_file_browser_raw_key(key).await?;
+                        } else {
+                            let action = self.input.handle_key(key);
+                            self.execute_action(action).await?;
                         }
                     }
-                }
-                Some(result) = self.highlight_rx.recv() => {
-                    self.highlight_cache.insert(result.buffer_id, result.highlights);
+                    Event::Mouse(mouse) => {
+                        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                            self.handle_mouse_click(mouse.column, mouse.row).await?;
+                        }
+                    }
+                    Event::Resize(_, _) => {}
+                    _ => {}
                 }
             }
 
@@ -557,7 +546,6 @@ impl Editor {
             self.quit_pending = false;
         }
         let viewport_height = self.active_viewport_height();
-        let mut needs_rehighlight = false;
 
         match action {
             // Movement
@@ -593,34 +581,31 @@ impl Editor {
                 self.with_buffer(|b| b.goto_line(line));
             }
 
-            // Editing
+            // Editing — incremental tree-sitter parse
             Action::InsertChar(c) => {
-                self.with_buffer(|b| b.insert_char(c));
-                needs_rehighlight = true;
+                self.with_buffer_edit(|b| b.insert_char(c));
             }
             Action::InsertNewline => {
-                self.with_buffer(|b| b.insert_newline());
-                needs_rehighlight = true;
+                self.with_buffer_edit(|b| b.insert_newline());
             }
             Action::DeleteCharBackward => {
-                self.with_buffer(|b| b.delete_char_backward());
-                needs_rehighlight = true;
+                self.with_buffer_edit(|b| b.delete_char_backward());
             }
             Action::DeleteCharForward => {
-                self.with_buffer(|b| b.delete_char_forward());
-                needs_rehighlight = true;
+                self.with_buffer_edit(|b| b.delete_char_forward());
             }
             Action::DeleteLine => {
-                self.with_buffer(|b| b.delete_line());
-                needs_rehighlight = true;
+                self.with_buffer_edit(|b| b.delete_line());
             }
+
+            // Undo/redo — full re-parse (tree state is invalidated)
             Action::Undo => {
                 self.with_buffer(|b| b.undo());
-                needs_rehighlight = true;
+                self.rehighlight_active();
             }
             Action::Redo => {
                 self.with_buffer(|b| b.redo());
-                needs_rehighlight = true;
+                self.rehighlight_active();
             }
 
             // Clipboard
@@ -643,7 +628,7 @@ impl Editor {
                     .and_then(|cb| cb.get_text().ok());
                 if let Some(text) = text {
                     self.with_buffer(|b| b.paste_after(&text));
-                    needs_rehighlight = true;
+                    self.rehighlight_active();
                 } else {
                     self.status_message = "Clipboard empty".into();
                 }
@@ -653,7 +638,7 @@ impl Editor {
                     .and_then(|cb| cb.get_text().ok());
                 if let Some(text) = text {
                     self.with_buffer(|b| b.paste_before(&text));
-                    needs_rehighlight = true;
+                    self.rehighlight_active();
                 } else {
                     self.status_message = "Clipboard empty".into();
                 }
@@ -668,14 +653,12 @@ impl Editor {
             }
 
             Action::InsertLineBelow => {
-                self.with_buffer(|b| b.insert_line_below());
+                self.with_buffer_edit(|b| b.insert_line_below());
                 self.input.mode = Mode::Insert;
-                needs_rehighlight = true;
             }
             Action::InsertLineAbove => {
-                self.with_buffer(|b| b.insert_line_above());
+                self.with_buffer_edit(|b| b.insert_line_above());
                 self.input.mode = Mode::Insert;
-                needs_rehighlight = true;
             }
 
             // Mode changes
@@ -858,16 +841,6 @@ impl Editor {
             | Action::BrowserHome => {}
 
             Action::Noop => {}
-        }
-
-        // Re-highlight on edits.
-        if needs_rehighlight {
-            if let Some(buf) = self.active_buffer() {
-                let buf_id = buf.id;
-                let text = buf.text_snapshot();
-                let path = buf.path.clone();
-                self.highlight_engine.request_highlight(buf_id, text, path);
-            }
         }
 
         // Scroll to keep cursor visible (on the pane directly).
@@ -1083,6 +1056,7 @@ impl Editor {
         let removed = self.buffers.remove(buf_idx);
         let removed_id = removed.id;
         self.highlight_cache.invalidate(removed_id);
+        self.highlight_engine.remove_buffer(removed_id);
 
         let active_id = self.pane_layout.active_id;
 
@@ -1397,11 +1371,38 @@ impl Editor {
         Ok(())
     }
 
+    /// Sync pane↔buffer cursors around a buffer operation. Returns whatever
+    /// the closure returns, or None if no active buffer exists.
+    fn sync_buffer<F, R>(&mut self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut Buffer) -> R,
+    {
+        let Self { buffers, pane_layout, .. } = self;
+        let pane = pane_layout.active_pane_mut();
+        let buf_id = pane.buffer_id?;
+        let buf = buffers.iter_mut().find(|b| b.id == buf_id)?;
+        buf.cursor = pane.cursor;
+        buf.scroll_offset = pane.scroll_offset;
+        let result = f(buf);
+        pane.cursor = buf.cursor;
+        pane.scroll_offset = buf.scroll_offset;
+        Some(result)
+    }
+
     fn with_buffer<F>(&mut self, f: F)
     where
         F: FnOnce(&mut Buffer),
     {
-        let Self { buffers, pane_layout, .. } = self;
+        self.sync_buffer(f);
+    }
+
+    /// Call a buffer edit method that returns Option<EditInfo>, then do
+    /// incremental tree-sitter parse and update the highlight cache.
+    fn with_buffer_edit<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Buffer) -> Option<EditInfo>,
+    {
+        let Self { buffers, pane_layout, highlight_engine, highlight_cache, .. } = self;
         let pane = pane_layout.active_pane_mut();
         let buf_id = match pane.buffer_id {
             Some(id) => id,
@@ -1411,13 +1412,35 @@ impl Editor {
             Some(b) => b,
             None => return,
         };
-        // Sync pane cursor → buffer
         buf.cursor = pane.cursor;
         buf.scroll_offset = pane.scroll_offset;
-        f(buf);
-        // Sync buffer cursor → pane
+        let edit_info = f(buf);
         pane.cursor = buf.cursor;
         pane.scroll_offset = buf.scroll_offset;
+
+        // Incremental re-highlight, falling back to full parse for
+        // buffers with no grammar state (e.g. markdown/plain text).
+        if let Some(edit) = edit_info {
+            let source = buf.text_snapshot();
+            let highlights = highlight_engine
+                .parse_incremental(buf_id, &source, &edit)
+                .unwrap_or_else(|| {
+                    let path = buf.path.clone();
+                    highlight_engine.parse_full(buf_id, &source, path.as_deref())
+                });
+            highlight_cache.insert(buf_id, highlights);
+        }
+    }
+
+    /// Full re-highlight for the active buffer (used after undo/redo/paste).
+    fn rehighlight_active(&mut self) {
+        if let Some(buf) = self.active_buffer() {
+            let buf_id = buf.id;
+            let source = buf.text_snapshot();
+            let path = buf.path.clone();
+            let highlights = self.highlight_engine.parse_full(buf_id, &source, path.as_deref());
+            self.highlight_cache.insert(buf_id, highlights);
+        }
     }
 
     /// Capture the current state as a jump position.

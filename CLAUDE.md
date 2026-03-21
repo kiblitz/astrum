@@ -47,8 +47,14 @@ Find-file and command palette are **overlays** — they float above pane content
 ### Cursor management
 Ratatui manages cursor visibility. Calling `set_cursor_position` shows the cursor; not calling it hides it. Never use manual `cursor::Show`/`cursor::Hide` after `terminal.draw()` — it fights with ratatui.
 
-### Syntax highlighting (known issue)
-Per-keystroke `spawn_blocking` for syntax highlighting causes lag on expensive grammars (e.g., markdown). The root cause is confirmed but not yet fixed. Do not apply unprincipled hacks (debouncing, generation counters) — a proper solution is needed.
+### Syntax highlighting
+Uses **tree-sitter** for synchronous, incremental parsing. Each edit produces an `EditInfo` (byte offsets + row/col positions) that feeds `tree.edit()` + `parser.parse(source, Some(&old_tree))` for sub-millisecond re-parses. Full re-parse is used for undo/redo/paste where the tree state is invalidated.
+
+- **HighlightEngine** owns per-buffer `BufferSyntaxState` (parser, tree, query)
+- **LanguageRegistry** maps file extensions to grammar crates (rust, python, js, json, toml, c, cpp)
+- Files with no grammar get plain (unstyled) highlights
+- Color scheme: One Dark palette
+- `with_buffer_edit` in editor.rs handles the edit→incremental parse→cache update pipeline
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.

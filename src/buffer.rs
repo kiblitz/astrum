@@ -1,3 +1,4 @@
+use crate::syntax::EditInfo;
 use ropey::Rope;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -164,10 +165,14 @@ impl Buffer {
         }
     }
 
-    pub fn insert_char(&mut self, ch: char) {
+    pub fn insert_char(&mut self, ch: char) -> Option<EditInfo> {
         self.save_undo();
         let idx = self.cursor_char_idx();
+        let start_byte = self.rope.char_to_byte(idx);
+        let start_pos = self.position_at_char(idx);
         self.rope.insert_char(idx, ch);
+        let new_end_byte = start_byte + ch.len_utf8();
+        let new_end_pos = self.position_at_char(idx + 1);
         if ch == '\n' {
             self.cursor.line += 1;
             self.cursor.col = 0;
@@ -175,21 +180,33 @@ impl Buffer {
             self.cursor.col += 1;
         }
         self.modified = true;
+        Some(EditInfo {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_position: start_pos,
+            old_end_position: start_pos,
+            new_end_position: new_end_pos,
+        })
     }
 
-    pub fn insert_newline(&mut self) {
-        self.insert_char('\n');
+    pub fn insert_newline(&mut self) -> Option<EditInfo> {
+        self.insert_char('\n')
     }
 
-    pub fn delete_char_backward(&mut self) {
+    pub fn delete_char_backward(&mut self) -> Option<EditInfo> {
         if self.cursor.col == 0 && self.cursor.line == 0 {
-            return;
+            return None;
         }
         self.save_undo();
         let idx = self.cursor_char_idx();
         if idx == 0 {
-            return;
+            return None;
         }
+        let start_byte = self.rope.char_to_byte(idx - 1);
+        let old_end_byte = self.rope.char_to_byte(idx);
+        let start_pos = self.position_at_char(idx - 1);
+        let old_end_pos = self.position_at_char(idx);
         self.rope.remove(idx - 1..idx);
         if self.cursor.col == 0 {
             self.cursor.line -= 1;
@@ -198,22 +215,42 @@ impl Buffer {
             self.cursor.col -= 1;
         }
         self.modified = true;
+        Some(EditInfo {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_position: start_pos,
+            old_end_position: old_end_pos,
+            new_end_position: start_pos,
+        })
     }
 
-    pub fn delete_char_forward(&mut self) {
+    pub fn delete_char_forward(&mut self) -> Option<EditInfo> {
         let idx = self.cursor_char_idx();
         if idx >= self.rope.len_chars() {
-            return;
+            return None;
         }
         self.save_undo();
+        let start_byte = self.rope.char_to_byte(idx);
+        let old_end_byte = self.rope.char_to_byte(idx + 1);
+        let start_pos = self.position_at_char(idx);
+        let old_end_pos = self.position_at_char(idx + 1);
         self.rope.remove(idx..idx + 1);
         self.clamp_cursor();
         self.modified = true;
+        Some(EditInfo {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_position: start_pos,
+            old_end_position: old_end_pos,
+            new_end_position: start_pos,
+        })
     }
 
-    pub fn delete_line(&mut self) {
+    pub fn delete_line(&mut self) -> Option<EditInfo> {
         if self.rope.len_lines() == 0 {
-            return;
+            return None;
         }
         self.save_undo();
         let line_start = self.rope.line_to_char(self.cursor.line);
@@ -222,11 +259,24 @@ impl Buffer {
         } else {
             self.rope.len_chars()
         };
-        if line_start < line_end {
-            self.rope.remove(line_start..line_end);
+        if line_start >= line_end {
+            return None;
         }
+        let start_byte = self.rope.char_to_byte(line_start);
+        let old_end_byte = self.rope.char_to_byte(line_end);
+        let start_pos = self.position_at_char(line_start);
+        let old_end_pos = self.position_at_char(line_end);
+        self.rope.remove(line_start..line_end);
         self.clamp_cursor();
         self.modified = true;
+        Some(EditInfo {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_position: start_pos,
+            old_end_position: old_end_pos,
+            new_end_position: start_pos,
+        })
     }
 
     pub fn move_up(&mut self) {
@@ -355,7 +405,7 @@ impl Buffer {
         self.cursor.col = col;
     }
 
-    pub fn insert_line_below(&mut self) {
+    pub fn insert_line_below(&mut self) -> Option<EditInfo> {
         self.save_undo();
         let line_end = if self.cursor.line + 1 < self.rope.len_lines() {
             self.rope.line_to_char(self.cursor.line + 1)
@@ -366,18 +416,42 @@ impl Buffer {
             }
             self.rope.len_chars()
         };
+        let start_byte = self.rope.char_to_byte(line_end);
+        let start_pos = self.position_at_char(line_end);
         self.rope.insert_char(line_end, '\n');
+        let new_end_byte = start_byte + 1;
+        let new_end_pos = self.position_at_char(line_end + 1);
         self.cursor.line += 1;
         self.cursor.col = 0;
         self.modified = true;
+        Some(EditInfo {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_position: start_pos,
+            old_end_position: start_pos,
+            new_end_position: new_end_pos,
+        })
     }
 
-    pub fn insert_line_above(&mut self) {
+    pub fn insert_line_above(&mut self) -> Option<EditInfo> {
         self.save_undo();
         let line_start = self.rope.line_to_char(self.cursor.line);
+        let start_byte = self.rope.char_to_byte(line_start);
+        let start_pos = self.position_at_char(line_start);
         self.rope.insert_char(line_start, '\n');
+        let new_end_byte = start_byte + 1;
+        let new_end_pos = self.position_at_char(line_start + 1);
         self.cursor.col = 0;
         self.modified = true;
+        Some(EditInfo {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_position: start_pos,
+            old_end_position: start_pos,
+            new_end_position: new_end_pos,
+        })
     }
 
     pub fn page_up(&mut self, page_size: usize) {
@@ -448,19 +522,17 @@ impl Buffer {
         self.rope.line(self.cursor.line).to_string()
     }
 
-    /// Paste text after the current line.
+    /// Paste text after the current line. Returns None — caller should do full re-parse.
     pub fn paste_after(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
         self.save_undo();
-        // If the text ends with a newline, treat it as a line-paste (insert below).
         if text.ends_with('\n') || text.ends_with("\r\n") {
             let insert_pos = if self.cursor.line + 1 < self.rope.len_lines() {
                 self.rope.line_to_char(self.cursor.line + 1)
             } else {
                 let len = self.rope.len_chars();
-                // Ensure there's a trailing newline before inserting.
                 if len > 0 && self.rope.char(len - 1) != '\n' {
                     self.rope.insert_char(len, '\n');
                 }
@@ -470,7 +542,6 @@ impl Buffer {
             self.cursor.line += 1;
             self.cursor.col = 0;
         } else {
-            // Inline paste after cursor.
             let idx = self.cursor_char_idx();
             let insert_at = (idx + 1).min(self.rope.len_chars());
             self.rope.insert(insert_at, text);
@@ -479,7 +550,7 @@ impl Buffer {
         self.modified = true;
     }
 
-    /// Paste text before the current line.
+    /// Paste text before the current line. Returns None — caller should do full re-parse.
     pub fn paste_before(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -503,6 +574,14 @@ impl Buffer {
         let line_start = self.rope.line_to_char(self.cursor.line);
         let line_len = self.current_line_len();
         line_start + self.cursor.col.min(line_len)
+    }
+
+    /// (row, col_in_bytes) for a given char index — used for tree-sitter Point.
+    fn position_at_char(&self, char_idx: usize) -> (usize, usize) {
+        let line = self.rope.char_to_line(char_idx);
+        let line_start_byte = self.rope.line_to_byte(line);
+        let byte = self.rope.char_to_byte(char_idx);
+        (line, byte - line_start_byte)
     }
 
     pub fn goto_line(&mut self, line: usize) {
