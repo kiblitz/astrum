@@ -106,7 +106,7 @@ impl KeyInput {
             KeyCode::Down => s.push_str("DOWN"),
             KeyCode::Left => s.push_str("LEFT"),
             KeyCode::Right => s.push_str("RIGHT"),
-            _ => s.push_str("?"),
+            _ => s.push('?'),
         }
         s
     }

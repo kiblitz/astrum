@@ -50,11 +50,6 @@ impl InputHandler {
         }
     }
 
-    /// True when we're in the middle of a key chain.
-    pub fn is_pending(&self) -> bool {
-        self.pending_branch.is_some()
-    }
-
     /// Access the keymap (for palette binding introspection).
     pub fn keymap(&self) -> &Keymap {
         &self.keymap

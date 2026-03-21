@@ -412,15 +412,6 @@ impl Buffer {
         self.clamp_cursor();
     }
 
-    pub fn ensure_visible(&mut self, viewport_height: usize) {
-        if self.cursor.line < self.scroll_offset {
-            self.scroll_offset = self.cursor.line;
-        }
-        if self.cursor.line >= self.scroll_offset + viewport_height {
-            self.scroll_offset = self.cursor.line - viewport_height + 1;
-        }
-    }
-
     /// Scroll viewport down by one line (Ctrl-e). Cursor stays put unless
     /// it would go above the viewport.
     pub fn scroll_down(&mut self, _viewport_height: usize) {
