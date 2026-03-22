@@ -232,6 +232,8 @@ pub struct Editor {
     pending_surround: bool,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
+    /// Interactive substitute confirmation state.
+    substitute_confirm: Option<SubstituteConfirm>,
 }
 
 /// Parsed `:s` or `:%s` substitute command.
@@ -240,6 +242,19 @@ pub struct Substitute {
     pub replacement: String,
     pub global: bool,      // /g flag: all occurrences per line
     pub whole_file: bool,  // %s: all lines (vs current line only)
+    pub confirm: bool,     // /c flag: ask before each replacement
+}
+
+/// State for interactive substitute confirmation (`:s/pat/rep/gc`).
+/// Holds the pending matches and steps through them one at a time.
+struct SubstituteConfirm {
+    replacement: String,
+    pattern_char_len: usize,
+    /// Remaining matches as (line_idx, col_start) — forward order.
+    remaining: Vec<(usize, usize)>,
+    current: usize,
+    replaced: usize,
+    undo_saved: bool,
 }
 
 /// Parse a substitute command string like `s/foo/bar/g` or `%s/foo/bar/`.
@@ -270,12 +285,13 @@ pub fn parse_substitute(cmd: &str) -> Option<Substitute> {
     let replacement = parts[1].to_string();
     let flags = if parts.len() > 2 { parts[2] } else { "" };
     let global = flags.contains('g');
+    let confirm = flags.contains('c');
 
     if pattern.is_empty() {
         return None;
     }
 
-    Some(Substitute { pattern, replacement, global, whole_file })
+    Some(Substitute { pattern, replacement, global, whole_file, confirm })
 }
 
 /// Apply a single motion to a buffer. This is the single source of truth for
@@ -370,6 +386,7 @@ impl Editor {
             visual_anchor: None,
             pending_surround: false,
             quit_pending: false,
+            substitute_confirm: None,
         })
     }
 
@@ -528,11 +545,15 @@ impl Editor {
                 let search_buf = &self.input.search_buffer;
                 let search_dir = self.input.search_direction;
                 let visual_anchor = self.visual_anchor;
+                let sub_hl = self.substitute_confirm.as_ref().map(|sc| {
+                    let (line, col) = sc.remaining[sc.current];
+                    (line, col, col + sc.pattern_char_len)
+                });
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
                         &pending_hints, hl_cache, file_browsers, palette, find_file,
-                        search_state, search_buf, search_dir, visual_anchor,
+                        search_state, search_buf, search_dir, visual_anchor, sub_hl,
                     );
                 })?;
             }
@@ -560,6 +581,10 @@ impl Editor {
                                 self.status_message.clear();
 
                                 // Overlays intercept all input when open.
+                                if self.substitute_confirm.is_some() {
+                                    self.handle_substitute_confirm_key(key);
+                                    continue;
+                                }
                                 if self.find_file.is_some() {
                                     self.handle_find_file_key(key).await?;
                                     continue;
@@ -2043,70 +2068,222 @@ impl Editor {
     // -- Substitute --
 
     fn execute_substitute(&mut self, sub: Substitute) {
-        let count = self.sync_buffer(|b| {
-            let line_range = if sub.whole_file {
+        let line_range = self.sync_buffer(|b| {
+            if sub.whole_file {
                 0..b.rope.len_lines()
             } else {
                 b.cursor.line..b.cursor.line + 1
-            };
+            }
+        });
+        let line_range = match line_range {
+            Some(r) => r,
+            None => return,
+        };
 
-            b.save_undo();
-            let mut total_replacements = 0usize;
-
-            // Process lines in reverse so that edits on later lines don't
-            // shift the char offsets of earlier lines.
-            let lines: Vec<usize> = line_range.collect();
-            for &line_idx in lines.iter().rev() {
+        // Collect all match positions (line, col_start) in forward order.
+        let matches = self.sync_buffer(|b| {
+            let mut all = Vec::new();
+            for line_idx in line_range.clone() {
                 if line_idx >= b.rope.len_lines() {
                     continue;
                 }
                 let line_str: String = b.rope.line(line_idx).chars().collect();
-
-                // Find match positions (byte offsets within the line string).
-                let mut positions = Vec::new();
                 let mut search_start = 0;
                 while search_start < line_str.len() {
                     if let Some(byte_pos) = line_str[search_start..].find(&sub.pattern) {
                         let abs = search_start + byte_pos;
-                        positions.push(abs);
+                        let col_start = line_str[..abs].chars().count();
+                        all.push((line_idx, col_start));
                         if !sub.global {
-                            break; // Only first match per line.
+                            break;
                         }
-                        // Advance past the match to find non-overlapping occurrences.
                         search_start = abs + sub.pattern.len();
                     } else {
                         break;
                     }
                 }
+            }
+            all
+        }).unwrap_or_default();
 
-                // Apply replacements in reverse order within the line so offsets stay valid.
+        if matches.is_empty() {
+            self.status_message = format!("Pattern not found: {}", sub.pattern);
+            return;
+        }
+
+        if sub.confirm {
+            // Enter interactive confirm mode — step through matches one at a time.
+            let (first_line, first_col) = matches[0];
+            self.sync_buffer(|b| {
+                b.cursor.line = first_line;
+                b.cursor.col = first_col;
+            });
+            self.substitute_confirm = Some(SubstituteConfirm {
+                replacement: sub.replacement,
+                pattern_char_len: sub.pattern.chars().count(),
+                remaining: matches,
+                current: 0,
+                replaced: 0,
+                undo_saved: false,
+            });
+            self.status_message = "Replace? (y)es (n)o (a)ll (q)uit".into();
+            return;
+        }
+
+        // Non-interactive: replace all at once.
+        let total = self.sync_buffer(|b| {
+            b.save_undo();
+            let mut total_replacements = 0usize;
+
+            // Process in reverse so edits don't shift earlier offsets.
+            for &(line_idx, col_start) in matches.iter().rev() {
                 let line_char_start = b.rope.line_to_char(line_idx);
-                for &byte_pos in positions.iter().rev() {
-                    let col_start = line_str[..byte_pos].chars().count();
-                    let col_end = col_start + sub.pattern.chars().count();
-                    let char_start = line_char_start + col_start;
-                    let char_end = line_char_start + col_end;
-                    b.rope.remove(char_start..char_end);
-                    b.rope.insert(char_start, &sub.replacement);
-                    total_replacements += 1;
-                }
+                let char_start = line_char_start + col_start;
+                let char_end = char_start + sub.pattern.chars().count();
+                b.rope.remove(char_start..char_end);
+                b.rope.insert(char_start, &sub.replacement);
+                total_replacements += 1;
             }
 
             if total_replacements > 0 {
                 b.invalidate_hash();
                 b.modified = true;
             }
-
             total_replacements
-        });
+        }).unwrap_or(0);
 
         self.rehighlight_active();
+        self.status_message = format!("{} substitution(s) made", total);
+    }
 
-        let total = count.unwrap_or(0);
-        if total == 0 {
-            self.status_message = format!("Pattern not found: {}", sub.pattern);
+    fn handle_substitute_confirm_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+
+        let action = match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => 'y',
+            KeyCode::Char('n') | KeyCode::Char('N') => 'n',
+            KeyCode::Char('a') | KeyCode::Char('A') => 'a',
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => 'q',
+            _ => return, // Ignore other keys.
+        };
+
+        let state = match self.substitute_confirm.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+
+        match action {
+            'y' => {
+                // Replace the current match and advance.
+                let (line_idx, col_start) = state.remaining[state.current];
+                let replacement = state.replacement.clone();
+                let pat_len = state.pattern_char_len;
+                let save_undo = !state.undo_saved;
+                self.sync_buffer(|b| {
+                    if save_undo {
+                        b.save_undo();
+                    }
+                    let line_char_start = b.rope.line_to_char(line_idx);
+                    let char_start = line_char_start + col_start;
+                    let char_end = char_start + pat_len;
+                    b.rope.remove(char_start..char_end);
+                    b.rope.insert(char_start, &replacement);
+                    b.invalidate_hash();
+                    b.modified = true;
+                });
+                let state = self.substitute_confirm.as_mut().unwrap();
+                state.undo_saved = true;
+                state.replaced += 1;
+
+                // Adjust remaining matches on the same line after this one,
+                // since the replacement may have changed their column offsets.
+                let col_delta = state.replacement.chars().count() as isize - state.pattern_char_len as isize;
+                for i in (state.current + 1)..state.remaining.len() {
+                    if state.remaining[i].0 == line_idx && state.remaining[i].1 > col_start {
+                        state.remaining[i].1 = (state.remaining[i].1 as isize + col_delta) as usize;
+                    }
+                }
+
+                state.current += 1;
+                self.substitute_confirm_advance();
+            }
+            'n' => {
+                // Skip this match, advance to next.
+                let state = self.substitute_confirm.as_mut().unwrap();
+                state.current += 1;
+                self.substitute_confirm_advance();
+            }
+            'a' => {
+                // Replace all remaining matches at once.
+                let state = self.substitute_confirm.take().unwrap();
+                let remaining: Vec<(usize, usize)> = state.remaining[state.current..].to_vec();
+                let replacement = state.replacement.clone();
+                let pat_len = state.pattern_char_len;
+                let save_undo = !state.undo_saved;
+                let mut count = state.replaced;
+
+                self.sync_buffer(|b| {
+                    if save_undo {
+                        b.save_undo();
+                    }
+                    // Apply in reverse to preserve offsets.
+                    for &(line_idx, col_start) in remaining.iter().rev() {
+                        let line_char_start = b.rope.line_to_char(line_idx);
+                        let char_start = line_char_start + col_start;
+                        let char_end = char_start + pat_len;
+                        b.rope.remove(char_start..char_end);
+                        b.rope.insert(char_start, &replacement);
+                        count += 1;
+                    }
+                    if count > 0 {
+                        b.invalidate_hash();
+                        b.modified = true;
+                    }
+                });
+
+                self.rehighlight_active();
+                self.status_message = format!("{} substitution(s) made", count);
+            }
+            'q' => {
+                // Quit confirmation, keep replacements already made.
+                let state = self.substitute_confirm.take().unwrap();
+                self.rehighlight_active();
+                if state.replaced > 0 {
+                    self.status_message = format!("{} substitution(s) made", state.replaced);
+                } else {
+                    self.status_message = "Substitution cancelled".into();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Advance to the next match in substitute confirm, or finish if done.
+    fn substitute_confirm_advance(&mut self) {
+        let done = {
+            let state = match self.substitute_confirm.as_ref() {
+                Some(s) => s,
+                None => return,
+            };
+            state.current >= state.remaining.len()
+        };
+
+        if done {
+            let state = self.substitute_confirm.take().unwrap();
+            self.rehighlight_active();
+            self.status_message = format!("{} substitution(s) made", state.replaced);
         } else {
-            self.status_message = format!("{} substitution(s) made", total);
+            // Move cursor to the next match.
+            let (line, col) = {
+                let state = self.substitute_confirm.as_ref().unwrap();
+                state.remaining[state.current]
+            };
+            self.sync_buffer(|b| {
+                b.cursor.line = line;
+                b.cursor.col = col;
+            });
+            self.rehighlight_active();
+            self.status_message = "Replace? (y)es (n)o (a)ll (q)uit".into();
         }
     }
 

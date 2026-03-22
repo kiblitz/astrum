@@ -4,8 +4,8 @@ use expect_test::{expect, Expect};
 fn parse(cmd: &str) -> String {
     match parse_substitute(cmd) {
         Some(sub) => format!(
-            "pat={:?} rep={:?} global={} whole_file={}",
-            sub.pattern, sub.replacement, sub.global, sub.whole_file
+            "pat={:?} rep={:?} global={} whole_file={} confirm={}",
+            sub.pattern, sub.replacement, sub.global, sub.whole_file, sub.confirm
         ),
         None => "None".to_string(),
     }
@@ -21,7 +21,7 @@ fn check(actual: &str, expect: Expect) {
 fn basic_substitute() {
     check(
         &parse("s/foo/bar/"),
-        expect!["pat=\"foo\" rep=\"bar\" global=false whole_file=false"],
+        expect![[r#"pat="foo" rep="bar" global=false whole_file=false confirm=false"#]],
     );
 }
 
@@ -29,7 +29,7 @@ fn basic_substitute() {
 fn global_flag() {
     check(
         &parse("s/foo/bar/g"),
-        expect!["pat=\"foo\" rep=\"bar\" global=true whole_file=false"],
+        expect![[r#"pat="foo" rep="bar" global=true whole_file=false confirm=false"#]],
     );
 }
 
@@ -37,7 +37,7 @@ fn global_flag() {
 fn whole_file() {
     check(
         &parse("%s/foo/bar/"),
-        expect!["pat=\"foo\" rep=\"bar\" global=false whole_file=true"],
+        expect![[r#"pat="foo" rep="bar" global=false whole_file=true confirm=false"#]],
     );
 }
 
@@ -45,7 +45,7 @@ fn whole_file() {
 fn whole_file_global() {
     check(
         &parse("%s/foo/bar/g"),
-        expect!["pat=\"foo\" rep=\"bar\" global=true whole_file=true"],
+        expect![[r#"pat="foo" rep="bar" global=true whole_file=true confirm=false"#]],
     );
 }
 
@@ -53,7 +53,7 @@ fn whole_file_global() {
 fn custom_delimiter() {
     check(
         &parse("s#foo#bar#g"),
-        expect!["pat=\"foo\" rep=\"bar\" global=true whole_file=false"],
+        expect![[r#"pat="foo" rep="bar" global=true whole_file=false confirm=false"#]],
     );
 }
 
@@ -61,7 +61,7 @@ fn custom_delimiter() {
 fn no_trailing_delimiter() {
     check(
         &parse("s/foo/bar"),
-        expect!["pat=\"foo\" rep=\"bar\" global=false whole_file=false"],
+        expect![[r#"pat="foo" rep="bar" global=false whole_file=false confirm=false"#]],
     );
 }
 
@@ -69,7 +69,7 @@ fn no_trailing_delimiter() {
 fn empty_replacement() {
     check(
         &parse("s/foo//"),
-        expect!["pat=\"foo\" rep=\"\" global=false whole_file=false"],
+        expect![[r#"pat="foo" rep="" global=false whole_file=false confirm=false"#]],
     );
 }
 
@@ -78,6 +78,30 @@ fn empty_pattern_rejected() {
     check(
         &parse("s//bar/"),
         expect!["None"],
+    );
+}
+
+#[test]
+fn confirm_flag() {
+    check(
+        &parse("s/foo/bar/c"),
+        expect!["pat=\"foo\" rep=\"bar\" global=false whole_file=false confirm=true"],
+    );
+}
+
+#[test]
+fn global_confirm_flags() {
+    check(
+        &parse("s/foo/bar/gc"),
+        expect!["pat=\"foo\" rep=\"bar\" global=true whole_file=false confirm=true"],
+    );
+}
+
+#[test]
+fn whole_file_global_confirm() {
+    check(
+        &parse("%s/foo/bar/gc"),
+        expect!["pat=\"foo\" rep=\"bar\" global=true whole_file=true confirm=true"],
     );
 }
 

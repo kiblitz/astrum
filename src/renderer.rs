@@ -37,6 +37,7 @@ impl Renderer {
         search_buffer: &str,
         search_direction: SearchDirection,
         visual_anchor: Option<(usize, usize)>,
+        substitute_highlight: Option<(usize, usize, usize)>,
     ) {
         let size = frame.area();
         let has_overlay = find_file.is_some() || palette.is_some();
@@ -77,7 +78,7 @@ impl Renderer {
         let active_fb = file_browsers.get(&pane_layout.active_id);
         if !buffers.is_empty() || !pane_layout.is_single() {
             let show_cursor = !has_overlay;
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor);
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight);
             // Status line
             if let Some(fb) = active_fb {
                 self.render_file_browser_status(frame, chunks[2], fb);
@@ -161,6 +162,7 @@ impl Renderer {
         search_state: &SearchState,
         mode: &Mode,
         visual_anchor: Option<(usize, usize)>,
+        substitute_highlight: Option<(usize, usize, usize)>,
     ) {
         match node {
             LayoutNode::Leaf(pane_id) => {
@@ -196,7 +198,8 @@ impl Renderer {
                         self.render_file_browser(frame, content_area, fb);
                     } else if let Some(buf) = pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
                         let pane_visual = if is_active && *mode == Mode::Visual { visual_anchor } else { None };
-                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state), pane_visual);
+                        let pane_sub_hl = if is_active { substitute_highlight } else { None };
+                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state), pane_visual, pane_sub_hl);
                     } else {
                         self.render_welcome(frame, content_area);
                     }
@@ -248,7 +251,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -282,7 +285,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight);
                             y_offset += h;
 
                             if i + 1 < children.len() {
@@ -619,6 +622,7 @@ impl Renderer {
         show_cursor: bool,
         search_state: Option<&SearchState>,
         visual_anchor: Option<(usize, usize)>,
+        substitute_highlight: Option<(usize, usize, usize)>,
     ) {
         let editor_height = area.height as usize;
         let line_num_width = buf.line_count().to_string().len().max(3);
@@ -722,6 +726,16 @@ impl Renderer {
             if let Some((match_line, match_col)) = bracket_match {
                 if line_idx == match_line {
                     spans = overlay_bracket_highlight(spans, match_col);
+                }
+            }
+
+            // Overlay substitute confirm highlight on this line.
+            if let Some((sub_line, sub_start, sub_end)) = substitute_highlight {
+                if line_idx == sub_line {
+                    spans = overlay_search_highlights(
+                        spans,
+                        &[(sub_start, sub_end, true)],
+                    );
                 }
             }
 
