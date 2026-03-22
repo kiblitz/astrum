@@ -199,6 +199,10 @@ fn default_keymap() -> Keymap {
         ("space tab", Action::JumpBack),
         ("space S-tab", Action::JumpForward),
         ("space space", Action::CommandPalette),
+        ("/", Action::EnterSearchForward),
+        ("?", Action::EnterSearchBackward),
+        ("n", Action::SearchNext),
+        ("N", Action::SearchPrev),
     ];
     for (seq, action) in normal_bindings {
         if let Some(keys) = parse_key_sequence(seq) {
@@ -382,6 +386,12 @@ keymap {
         y { y "YankLine" }
         p "Paste"
         P "PasteBefore"
+
+        // Search
+        "/" "EnterSearchForward"
+        "?" "EnterSearchBackward"
+        n "SearchNext"
+        N "SearchPrev"
 
         // Leader key (spacemacs-style)
         spc {

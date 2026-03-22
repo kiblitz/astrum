@@ -1,4 +1,4 @@
-use crate::action::Action;
+use crate::action::{Action, SearchDirection};
 use crate::buffer::Buffer;
 use crate::config::Config;
 use crate::file_browser::{scan_directory, FileBrowser, FileBrowserResult};
@@ -168,6 +168,34 @@ enum JumpPosition {
     },
 }
 
+/// Per-buffer search matches.
+pub struct BufferSearchMatches {
+    /// Positions of all matches: (line, col_start, col_end).
+    pub matches: Vec<(usize, usize, usize)>,
+    /// Index into `matches` of the current/closest match.
+    pub current_match: Option<usize>,
+}
+
+/// Global search state plus per-buffer match caches.
+pub struct SearchState {
+    /// The last successfully executed search pattern.
+    pub last_pattern: Option<String>,
+    /// The direction of the last search.
+    pub last_direction: SearchDirection,
+    /// Per-buffer match results: buffer_id → matches.
+    pub buffer_matches: HashMap<usize, BufferSearchMatches>,
+}
+
+impl SearchState {
+    fn new() -> Self {
+        Self {
+            last_pattern: None,
+            last_direction: SearchDirection::Forward,
+            buffer_matches: HashMap::new(),
+        }
+    }
+}
+
 pub struct Editor {
     buffers: Vec<Buffer>,
     pane_layout: PaneLayout,
@@ -186,6 +214,7 @@ pub struct Editor {
     palette: Option<PaletteState>,
     find_file: Option<FindFileState>,
     swap_manager: SwapManager,
+    search: SearchState,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
 }
@@ -222,6 +251,7 @@ impl Editor {
             palette: None,
             find_file: None,
             swap_manager,
+            search: SearchState::new(),
             quit_pending: false,
         })
     }
@@ -377,10 +407,14 @@ impl Editor {
 
                 let palette = &self.palette;
                 let find_file = &self.find_file;
+                let search_state = &self.search;
+                let search_buf = &self.input.search_buffer;
+                let search_dir = self.input.search_direction;
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
                         &pending_hints, hl_cache, file_browsers, palette, find_file,
+                        search_state, search_buf, search_dir,
                     );
                 })?;
             }
@@ -434,6 +468,16 @@ impl Editor {
                                 } else {
                                     let action = self.input.handle_key(key);
                                     self.execute_action(action).await?;
+
+                                    // Live search: update highlights as the user types.
+                                    if self.input.mode == Mode::Search {
+                                        if !self.input.search_buffer.is_empty() {
+                                            let pattern = self.input.search_buffer.clone();
+                                            self.compute_search_matches_for_active(&pattern);
+                                        } else if let Some(buf_id) = self.active_buffer().map(|b| b.id) {
+                                            self.search.buffer_matches.remove(&buf_id);
+                                        }
+                                    }
                                 }
                             }
                             Event::Mouse(mouse) => {
@@ -730,6 +774,32 @@ impl Editor {
             Action::EnterCommandMode => {
                 self.input.mode = Mode::Command;
                 self.input.command_buffer.clear();
+            }
+
+            // Search
+            Action::EnterSearchForward => {
+                self.input.mode = Mode::Search;
+                self.input.search_direction = SearchDirection::Forward;
+                self.input.search_buffer.clear();
+            }
+            Action::EnterSearchBackward => {
+                self.input.mode = Mode::Search;
+                self.input.search_direction = SearchDirection::Backward;
+                self.input.search_buffer.clear();
+            }
+            Action::SearchExecute(pattern, direction) => {
+                self.execute_search(pattern, direction);
+            }
+            Action::SearchNext => {
+                self.search_next_prev(false);
+            }
+            Action::SearchPrev => {
+                self.search_next_prev(true);
+            }
+            Action::SearchCancel => {
+                if let Some(buf_id) = self.active_buffer().map(|b| b.id) {
+                    self.search.buffer_matches.remove(&buf_id);
+                }
             }
 
             // Buffer management
@@ -1677,6 +1747,147 @@ impl Editor {
                 self.file_browsers.insert(pane_id, fb);
             }
         }
+    }
+
+    // -- Search --
+
+    /// Find all occurrences of `pattern` in the active buffer.
+    fn find_all_matches(&self, pattern: &str) -> Vec<(usize, usize, usize)> {
+        let buf = match self.active_buffer() {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+        let mut matches = Vec::new();
+        for line_idx in 0..buf.rope.len_lines() {
+            let line = buf.rope.line(line_idx);
+            let line_str: String = line.chars().collect();
+            // Find all substring matches using char indices.
+            let mut search_start = 0;
+            while search_start < line_str.len() {
+                if let Some(byte_pos) = line_str[search_start..].find(pattern) {
+                    let abs_byte = search_start + byte_pos;
+                    // Convert byte offset to char offset.
+                    let col_start = line_str[..abs_byte].chars().count();
+                    let col_end = col_start + pattern.chars().count();
+                    matches.push((line_idx, col_start, col_end));
+                    // Advance past this match to find overlapping or next matches.
+                    search_start = abs_byte + pattern.len().max(1);
+                } else {
+                    break;
+                }
+            }
+        }
+        matches
+    }
+
+    /// Execute a search: store pattern, find matches, jump to first match.
+    fn execute_search(&mut self, pattern: String, direction: SearchDirection) {
+        self.search.last_pattern = Some(pattern.clone());
+        self.search.last_direction = direction;
+        self.compute_search_matches_for_active(&pattern);
+
+        let buf_id = self.active_buffer().map(|b| b.id);
+        let matches = buf_id.and_then(|id| self.search.buffer_matches.get(&id));
+        if matches.map_or(true, |m| m.matches.is_empty()) {
+            self.status_message = format!("Pattern not found: {}", pattern);
+            return;
+        }
+
+        self.jump_to_next_match(direction);
+    }
+
+    /// Compute and store search matches for the active buffer.
+    fn compute_search_matches_for_active(&mut self, pattern: &str) {
+        if let Some(buf_id) = self.active_buffer().map(|b| b.id) {
+            let matches = self.find_all_matches(pattern);
+            self.search.buffer_matches.insert(buf_id, BufferSearchMatches {
+                matches,
+                current_match: None,
+            });
+        }
+    }
+
+    /// Jump to the next (or previous if `reverse` is true) match.
+    fn search_next_prev(&mut self, reverse: bool) {
+        if self.search.last_pattern.is_none() {
+            self.status_message = "No previous search".into();
+            return;
+        }
+
+        // Recompute matches (buffer may have changed since last search).
+        let pattern = self.search.last_pattern.clone().unwrap();
+        self.compute_search_matches_for_active(&pattern);
+
+        let buf_id = self.active_buffer().map(|b| b.id);
+        let matches = buf_id.and_then(|id| self.search.buffer_matches.get(&id));
+        if matches.map_or(true, |m| m.matches.is_empty()) {
+            self.status_message = format!("Pattern not found: {}", pattern);
+            return;
+        }
+
+        let direction = if reverse {
+            self.search.last_direction.opposite()
+        } else {
+            self.search.last_direction
+        };
+        self.jump_to_next_match(direction);
+    }
+
+    /// Jump cursor to the next match in `direction` from the current cursor position.
+    fn jump_to_next_match(&mut self, direction: SearchDirection) {
+        let pane = self.pane_layout.active_pane();
+        let cur_line = pane.cursor.line;
+        let cur_col = pane.cursor.col;
+        let buf_id = match pane.buffer_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let (idx, line, col, match_count) = {
+            let bm = match self.search.buffer_matches.get(&buf_id) {
+                Some(bm) if !bm.matches.is_empty() => bm,
+                _ => return,
+            };
+            let matches = &bm.matches;
+
+            let idx = match direction {
+                SearchDirection::Forward => {
+                    matches
+                        .iter()
+                        .position(|&(line, col, _)| line > cur_line || (line == cur_line && col > cur_col))
+                        .unwrap_or(0)
+                }
+                SearchDirection::Backward => {
+                    matches
+                        .iter()
+                        .rposition(|&(line, col, _)| line < cur_line || (line == cur_line && col < cur_col))
+                        .unwrap_or(matches.len() - 1)
+                }
+            };
+
+            let (line, col, _) = matches[idx];
+            (idx, line, col, matches.len())
+        };
+
+        if let Some(bm) = self.search.buffer_matches.get_mut(&buf_id) {
+            bm.current_match = Some(idx);
+        }
+
+        let pane = self.pane_layout.active_pane_mut();
+        pane.cursor.line = line;
+        pane.cursor.col = col;
+
+        let wrapped = match direction {
+            SearchDirection::Forward => idx == 0 && (cur_line > line || (cur_line == line && cur_col >= col)),
+            SearchDirection::Backward => idx == match_count - 1 && (cur_line < line || (cur_line == line && cur_col <= col)),
+        };
+        let wrap_msg = if wrapped { " [wrapped]" } else { "" };
+        self.status_message = format!(
+            "[{}/{}]{}",
+            idx + 1,
+            match_count,
+            wrap_msg,
+        );
     }
 
     fn cleanup(&mut self) {

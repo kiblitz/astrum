@@ -1,7 +1,7 @@
 # Astrum — TODO
 
 ## Tier 1 — Core editor fundamentals
-- [ ] Search (`/`, `?`, `n`, `N`)
+- [x] Search (`/`, `?`, `n`, `N`)
 - [ ] Visual mode operations (select + delete/yank/change)
 - [ ] Motion-based operators (`d5j`, `c$`, `yw`)
 - [ ] Text objects (`iw`, `a{`, `i"`, etc.)

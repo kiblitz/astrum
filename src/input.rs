@@ -1,4 +1,4 @@
-use crate::action::Action;
+use crate::action::{Action, SearchDirection};
 use crate::keymap::{lookup_in_map, KeyInput, KeyLookup, KeyTrieNode, Keymap};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::collections::HashMap;
@@ -10,6 +10,7 @@ pub enum Mode {
     Insert,
     Visual,
     Command,
+    Search,
 }
 
 impl Mode {
@@ -19,6 +20,7 @@ impl Mode {
             Mode::Insert => "INSERT",
             Mode::Visual => "VISUAL",
             Mode::Command => "COMMAND",
+            Mode::Search => "SEARCH",
         }
     }
 }
@@ -26,6 +28,8 @@ impl Mode {
 pub struct InputHandler {
     pub mode: Mode,
     pub command_buffer: String,
+    pub search_buffer: String,
+    pub search_direction: SearchDirection,
     pub pending_display: String,
     keymap: Keymap,
 
@@ -43,6 +47,8 @@ impl InputHandler {
         Self {
             mode: Mode::Normal,
             command_buffer: String::new(),
+            search_buffer: String::new(),
+            search_direction: SearchDirection::Forward,
             pending_display: String::new(),
             keymap,
             pending_branch: None,
@@ -89,6 +95,7 @@ impl InputHandler {
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         match self.mode {
             Mode::Command => return self.handle_command_key(key),
+            Mode::Search => return self.handle_search_key(key),
             _ => {}
         }
 
@@ -144,7 +151,7 @@ impl InputHandler {
             Mode::Normal => &self.keymap.normal,
             Mode::Insert => &self.keymap.insert,
             Mode::Visual => &self.keymap.visual,
-            Mode::Command => unreachable!(),
+            Mode::Command | Mode::Search => unreachable!(),
         };
 
         match mode_keymap.lookup(&input) {
@@ -263,6 +270,41 @@ impl InputHandler {
             }
             KeyCode::Char(c) => {
                 self.command_buffer.push(c);
+                Action::Noop
+            }
+            _ => Action::Noop,
+        }
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.search_buffer.clear();
+                Action::SearchCancel
+            }
+            KeyCode::Enter => {
+                let pattern = self.search_buffer.clone();
+                self.search_buffer.clear();
+                self.mode = Mode::Normal;
+                if pattern.is_empty() {
+                    // Empty pattern: repeat last search
+                    Action::SearchNext
+                } else {
+                    Action::SearchExecute(pattern, self.search_direction)
+                }
+            }
+            KeyCode::Backspace => {
+                if self.search_buffer.is_empty() {
+                    self.mode = Mode::Normal;
+                    Action::SearchCancel
+                } else {
+                    self.search_buffer.pop();
+                    Action::Noop
+                }
+            }
+            KeyCode::Char(c) => {
+                self.search_buffer.push(c);
                 Action::Noop
             }
             _ => Action::Noop,

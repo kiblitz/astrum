@@ -1,3 +1,19 @@
+/// Direction of a search operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchDirection {
+    Forward,
+    Backward,
+}
+
+impl SearchDirection {
+    pub fn opposite(self) -> Self {
+        match self {
+            SearchDirection::Forward => SearchDirection::Backward,
+            SearchDirection::Backward => SearchDirection::Forward,
+        }
+    }
+}
+
 /// All actions the editor can perform.
 ///
 /// Unit variants are configurable — they can appear in config.kdl.
@@ -41,6 +57,12 @@ pub enum Action {
     // -- Jump history --
     JumpBack,
     JumpForward,
+
+    // -- Search --
+    EnterSearchForward,
+    EnterSearchBackward,
+    SearchNext,
+    SearchPrev,
 
     // -- Mode changes --
     EnterInsertMode,
@@ -96,6 +118,8 @@ pub enum Action {
     ExecuteCommand(String),
     SaveBufferAs(String),
     GotoLine(usize),
+    SearchExecute(String, SearchDirection),
+    SearchCancel,
     Noop,
 }
 
@@ -132,6 +156,10 @@ impl Action {
             "PasteBefore" => Some(Action::PasteBefore),
             "JumpBack" => Some(Action::JumpBack),
             "JumpForward" => Some(Action::JumpForward),
+            "EnterSearchForward" => Some(Action::EnterSearchForward),
+            "EnterSearchBackward" => Some(Action::EnterSearchBackward),
+            "SearchNext" => Some(Action::SearchNext),
+            "SearchPrev" => Some(Action::SearchPrev),
             "EnterInsertMode" => Some(Action::EnterInsertMode),
             "EnterInsertModeAppend" => Some(Action::EnterInsertModeAppend),
             "EnterInsertModeLineEnd" => Some(Action::EnterInsertModeLineEnd),
@@ -205,6 +233,10 @@ impl Action {
             Action::PasteBefore => "Paste before",
             Action::JumpBack => "Jump back",
             Action::JumpForward => "Jump forward",
+            Action::EnterSearchForward => "Search forward",
+            Action::EnterSearchBackward => "Search backward",
+            Action::SearchNext => "Search next",
+            Action::SearchPrev => "Search previous",
             Action::EnterInsertMode => "Enter insert mode",
             Action::EnterInsertModeAppend => "Enter insert mode (append)",
             Action::EnterInsertModeLineEnd => "Enter insert mode (line end)",
@@ -246,6 +278,8 @@ impl Action {
             Action::ExecuteCommand(_) => "Execute command",
             Action::SaveBufferAs(_) => "Save buffer as",
             Action::GotoLine(_) => "Go to line",
+            Action::SearchExecute(_, _) => "Execute search",
+            Action::SearchCancel => "Cancel search",
             Action::Noop => "No-op",
         }
     }
@@ -264,6 +298,8 @@ impl Action {
             Action::Undo, Action::Redo,
             Action::YankLine, Action::Paste, Action::PasteBefore,
             Action::JumpBack, Action::JumpForward,
+            Action::EnterSearchForward, Action::EnterSearchBackward,
+            Action::SearchNext, Action::SearchPrev,
             Action::EnterInsertMode, Action::EnterInsertModeAppend,
             Action::EnterInsertModeLineEnd, Action::EnterInsertModeLineStart,
             Action::EnterNormalMode, Action::EnterVisualMode, Action::EnterCommandMode,

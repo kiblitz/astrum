@@ -1,5 +1,6 @@
+use crate::action::SearchDirection;
 use crate::buffer::{Buffer, Cursor};
-use crate::editor::{FindFileState, PaletteState};
+use crate::editor::{FindFileState, PaletteState, SearchState};
 use crate::file_browser::{format_size, BrowserInputMode, FileBrowser};
 use crate::input::Mode;
 use crate::pane::{LayoutNode, PaneLayout, SplitDirection};
@@ -32,6 +33,9 @@ impl Renderer {
         file_browsers: &HashMap<usize, FileBrowser>,
         palette: &Option<PaletteState>,
         find_file: &Option<FindFileState>,
+        search_state: &SearchState,
+        search_buffer: &str,
+        search_direction: SearchDirection,
     ) {
         let size = frame.area();
         let has_overlay = find_file.is_some() || palette.is_some();
@@ -72,7 +76,7 @@ impl Renderer {
         let active_fb = file_browsers.get(&pane_layout.active_id);
         if !buffers.is_empty() || !pane_layout.is_single() {
             let show_cursor = !has_overlay;
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor);
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state);
             // Status line
             if let Some(fb) = active_fb {
                 self.render_file_browser_status(frame, chunks[2], fb);
@@ -102,6 +106,8 @@ impl Renderer {
             pending_keys,
             pending_hints,
             active_fb,
+            search_buffer,
+            search_direction,
         );
 
         // Overlays
@@ -117,6 +123,9 @@ impl Renderer {
         if !has_overlay {
             if *mode == Mode::Command {
                 let x = chunks[3].x + 1 + command_buffer.len() as u16;
+                frame.set_cursor_position((x, chunks[3].y));
+            } else if *mode == Mode::Search {
+                let x = chunks[3].x + 1 + search_buffer.len() as u16;
                 frame.set_cursor_position((x, chunks[3].y));
             } else if let Some(fb) = active_fb {
                 match fb.input_mode {
@@ -148,6 +157,7 @@ impl Renderer {
         highlight_cache: &HighlightCache,
         file_browsers: &HashMap<usize, FileBrowser>,
         show_cursor: bool,
+        search_state: &SearchState,
     ) {
         match node {
             LayoutNode::Leaf(pane_id) => {
@@ -182,7 +192,7 @@ impl Renderer {
                     if let Some(fb) = pane_fb {
                         self.render_file_browser(frame, content_area, fb);
                     } else if let Some(buf) = pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
-                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor);
+                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state));
                     } else {
                         self.render_welcome(frame, content_area);
                     }
@@ -234,7 +244,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -268,7 +278,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state);
                             y_offset += h;
 
                             if i + 1 < children.len() {
@@ -603,6 +613,7 @@ impl Renderer {
         is_active: bool,
         highlight_cache: &HighlightCache,
         show_cursor: bool,
+        search_state: Option<&SearchState>,
     ) {
         let editor_height = area.height as usize;
         let line_num_width = buf.line_count().to_string().len().max(3);
@@ -640,6 +651,15 @@ impl Renderer {
         }
         frame.render_widget(Paragraph::new(gutter_lines), editor_chunks[0]);
 
+        // Collect search matches for highlighting from per-buffer state.
+        let buf_search = search_state.and_then(|s| s.buffer_matches.get(&buf.id));
+        let search_matches: Vec<&(usize, usize, usize)> = buf_search
+            .map(|bm| &bm.matches)
+            .into_iter()
+            .flatten()
+            .collect();
+        let current_match_idx = buf_search.and_then(|bm| bm.current_match);
+
         // Editor content
         let cached = highlight_cache.get(buf.id);
         let mut editor_lines = Vec::new();
@@ -651,28 +671,38 @@ impl Renderer {
                 continue;
             }
 
-            if let Some(highlights) = cached {
+            let mut spans: Vec<Span> = if let Some(highlights) = cached {
                 if let Some(segments) = highlights.get(line_idx) {
-                    let spans: Vec<Span> = segments
+                    segments
                         .iter()
                         .map(|seg| {
                             Span::styled(seg.text.clone(), Style::default().fg(seg.fg))
                         })
-                        .collect();
-                    editor_lines.push(Line::from(spans));
-                    continue;
+                        .collect()
+                } else {
+                    let line = buf.rope.line(line_idx);
+                    let text: String = line.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                    vec![Span::styled(text, Style::default().fg(Color::White))]
                 }
+            } else {
+                let line = buf.rope.line(line_idx);
+                let text: String = line.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                vec![Span::styled(text, Style::default().fg(Color::White))]
+            };
+
+            // Overlay search highlights on this line.
+            let line_matches: Vec<(usize, usize, bool)> = search_matches
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.0 == line_idx)
+                .map(|(global_idx, m)| (m.1, m.2, current_match_idx == Some(global_idx)))
+                .collect();
+
+            if !line_matches.is_empty() {
+                spans = overlay_search_highlights(spans, &line_matches);
             }
 
-            let line = buf.rope.line(line_idx);
-            let text: String = line
-                .chars()
-                .filter(|c| *c != '\n' && *c != '\r')
-                .collect();
-            editor_lines.push(Line::from(Span::styled(
-                text,
-                Style::default().fg(Color::White),
-            )));
+            editor_lines.push(Line::from(spans));
         }
 
         frame.render_widget(Paragraph::new(editor_lines), editor_chunks[1]);
@@ -703,7 +733,7 @@ impl Renderer {
             Mode::Normal => Style::default().fg(Color::Black).bg(Color::Blue),
             Mode::Insert => Style::default().fg(Color::Black).bg(Color::Green),
             Mode::Visual => Style::default().fg(Color::Black).bg(Color::Magenta),
-            Mode::Command => Style::default().fg(Color::Black).bg(Color::Yellow),
+            Mode::Command | Mode::Search => Style::default().fg(Color::Black).bg(Color::Yellow),
         };
 
         let mode_span = Span::styled(
@@ -749,6 +779,8 @@ impl Renderer {
         pending_keys: &str,
         pending_hints: &[(String, String)],
         file_browser: Option<&FileBrowser>,
+        search_buffer: &str,
+        search_direction: SearchDirection,
     ) {
         // File browser input modes
         if let Some(fb) = file_browser {
@@ -782,7 +814,16 @@ impl Renderer {
             }
         }
 
-        let content = if *mode == Mode::Command {
+        let content = if *mode == Mode::Search {
+            let prefix = match search_direction {
+                SearchDirection::Forward => "/",
+                SearchDirection::Backward => "?",
+            };
+            Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Yellow)),
+                Span::styled(search_buffer.to_string(), Style::default().fg(Color::White)),
+            ])
+        } else if *mode == Mode::Command {
             Line::from(vec![
                 Span::styled(":", Style::default().fg(Color::White)),
                 Span::styled(command_buffer.to_string(), Style::default().fg(Color::White)),
@@ -996,4 +1037,62 @@ impl Renderer {
 
         frame.render_widget(Paragraph::new(lines), list_area);
     }
+}
+
+/// Overlay search match highlights on a line's existing spans.
+/// `matches` is a list of (col_start, col_end, is_current) for matches on this line.
+fn overlay_search_highlights<'a>(
+    spans: Vec<Span<'a>>,
+    matches: &[(usize, usize, bool)],
+) -> Vec<Span<'a>> {
+    let highlight_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    let current_style = Style::default().fg(Color::Black).bg(Color::Rgb(255, 150, 50));
+
+    let mut result = Vec::new();
+    let mut col = 0usize;
+
+    for span in spans {
+        let span_text: Vec<char> = span.content.chars().collect();
+        let span_start = col;
+        let span_end = col + span_text.len();
+        let base_style = span.style;
+
+        let mut pos = 0; // Position within this span (in chars)
+
+        for &(m_start, m_end, is_current) in matches {
+            // Clip match to this span's range.
+            let hl_start = m_start.max(span_start);
+            let hl_end = m_end.min(span_end);
+
+            if hl_start >= hl_end || hl_start >= span_end || hl_end <= span_start {
+                continue;
+            }
+
+            let local_start = hl_start - span_start;
+            let local_end = hl_end - span_start;
+
+            // Emit pre-match text with original style.
+            if pos < local_start {
+                let text: String = span_text[pos..local_start].iter().collect();
+                result.push(Span::styled(text, base_style));
+            }
+
+            // Emit match text with highlight style.
+            let text: String = span_text[local_start..local_end].iter().collect();
+            let style = if is_current { current_style } else { highlight_style };
+            result.push(Span::styled(text, style));
+
+            pos = local_end;
+        }
+
+        // Emit remaining text after last match.
+        if pos < span_text.len() {
+            let text: String = span_text[pos..].iter().collect();
+            result.push(Span::styled(text, base_style));
+        }
+
+        col = span_end;
+    }
+
+    result
 }
