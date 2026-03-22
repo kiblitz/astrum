@@ -144,6 +144,21 @@ Per-pane jump history with back/forward stacks.
 - `push_jump()` records current position before navigation events (opening files, switching buffers, opening browser)
 - `jump_back`/`jump_forward` only push current position to opposite stack if destination exists (prevents stack growth at end)
 
+### Macros
+Vim-style macro recording and playback.
+
+- `q<reg>` starts recording into register `<reg>` (a-z), `q` stops recording
+- `@<reg>` replays the macro in register `<reg>`, `@@` replays the last played macro
+- **Records `Action` variants**, not raw key events — replay is trivial via `execute_action()`
+- Counted actions (e.g. `3j`) are stored as 3 copies of the action for faithful replay
+- `RecordMacro` and `PlayMacro` are never recorded into the macro buffer
+- Recording indicator shown in status line (red "recording @a")
+- `macro_registers: HashMap<char, Vec<Action>>` stores completed macros
+- `recording_macro: Option<(char, Vec<Action>)>` holds the in-progress recording
+- `last_macro_register: Option<char>` enables `@@`
+- Uses `awaiting_char` + `awaiting_macro_record`/`awaiting_macro_play` flags for register selection
+- `play_macro()` uses `Box::pin` to handle async recursion (macros can contain `@` to nest)
+
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.
 - Modes: Normal, Insert, Visual, Command, Search (`:` prefix for command, `/`/`?` for search).

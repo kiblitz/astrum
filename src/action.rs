@@ -129,6 +129,10 @@ pub enum Action {
     // -- Command palette --
     CommandPalette,
 
+    // -- Macros --
+    RecordMacro,
+    PlayMacro,
+
     // -- Runtime-only --
     InsertChar(char),
     ExecuteCommand(String),
@@ -225,6 +229,8 @@ impl Action {
             "QuitAll" => Some(Action::QuitAll),
             "ForceQuitAll" => Some(Action::ForceQuitAll),
             "CommandPalette" => Some(Action::CommandPalette),
+            "RecordMacro" => Some(Action::RecordMacro),
+            "PlayMacro" => Some(Action::PlayMacro),
             _ => None,
         }
     }
@@ -310,6 +316,8 @@ impl Action {
             Action::BrowserClose => "Browser: close",
             Action::BrowserHome => "Browser: go home",
             Action::CommandPalette => "Command palette",
+            Action::RecordMacro => "Record macro",
+            Action::PlayMacro => "Play macro",
             Action::Quit => "Quit (close buffer)",
             Action::ForceQuit => "Force quit (close buffer)",
             Action::QuitAll => "Quit all",
@@ -357,6 +365,7 @@ impl Action {
             Action::BrowserOpen, Action::BrowserParentDir, Action::BrowserFilter,
             Action::BrowserNewFile, Action::BrowserClose, Action::BrowserHome,
             Action::CommandPalette,
+            Action::RecordMacro, Action::PlayMacro,
             Action::Quit, Action::ForceQuit, Action::QuitAll, Action::ForceQuitAll,
         ]
     }

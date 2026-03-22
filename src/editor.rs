@@ -20,6 +20,17 @@ use std::path::PathBuf;
 
 enum VisualOp { Delete, Change, Yank }
 
+/// What we're waiting for after `awaiting_char` is set.
+/// Esc cancels all variants generically by setting this to `None`.
+enum AwaitingChar {
+    /// Visual surround: waiting for the wrap character.
+    Surround,
+    /// Macro record: waiting for register char (a-z).
+    MacroRecord,
+    /// Macro play: waiting for register char (a-z or @).
+    MacroPlay { count: usize },
+}
+
 /// State for the command palette (SPC SPC).
 pub struct PaletteState {
     pub query: String,
@@ -228,12 +239,19 @@ pub struct Editor {
     pending_operator: Option<(Action, usize)>,
     /// Visual mode anchor: (line, col) where selection started.
     visual_anchor: Option<(usize, usize)>,
-    /// Pending surround: waiting for the wrap character in visual mode.
-    pending_surround: bool,
+    /// Awaiting a single char input (surround char, macro register, etc.).
+    /// Esc cancels generically by setting this to `None`.
+    awaiting_char: Option<AwaitingChar>,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
     /// Interactive substitute confirmation state.
     substitute_confirm: Option<SubstituteConfirm>,
+    /// Macro registers: register char → recorded actions.
+    macro_registers: HashMap<char, Vec<Action>>,
+    /// Currently recording macro: (register char, actions so far).
+    recording_macro: Option<(char, Vec<Action>)>,
+    /// Last played macro register (for `@@`).
+    last_macro_register: Option<char>,
 }
 
 /// Parsed `:s` or `:%s` substitute command.
@@ -384,9 +402,12 @@ impl Editor {
             search: SearchState::new(),
             pending_operator: None,
             visual_anchor: None,
-            pending_surround: false,
+            awaiting_char: None,
             quit_pending: false,
             substitute_confirm: None,
+            macro_registers: HashMap::new(),
+            recording_macro: None,
+            last_macro_register: None,
         })
     }
 
@@ -549,11 +570,13 @@ impl Editor {
                     let (line, col) = sc.remaining[sc.current];
                     (line, col, col + sc.pattern_char_len)
                 });
+                let rec_macro = self.recording_macro.as_ref().map(|(reg, _)| *reg);
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
                         &pending_hints, hl_cache, file_browsers, palette, find_file,
                         search_state, search_buf, search_dir, visual_anchor, sub_hl,
+                        rec_macro,
                     );
                 })?;
             }
@@ -783,15 +806,54 @@ impl Editor {
             self.quit_pending = false;
         }
 
-        // Surround-pending: wrap visual selection with the typed character.
-        if self.pending_surround {
-            self.pending_surround = false;
+        // Awaiting a single char: dispatch based on what we're waiting for.
+        // Esc already cleared this to None via EnterNormalMode, so only
+        // InsertChar(c) arrives here.
+        if let Some(awaiting) = self.awaiting_char.take() {
             self.input.pending_display.clear();
             if let Action::InsertChar(c) = action {
-                self.visual_surround(c);
-                return Ok(());
+                match awaiting {
+                    AwaitingChar::Surround => {
+                        self.visual_surround(c);
+                    }
+                    AwaitingChar::MacroRecord => {
+                        if c.is_ascii_alphabetic() {
+                            self.recording_macro = Some((c, Vec::new()));
+                        } else {
+                            self.status_message = "Macro register must be a-z".into();
+                        }
+                    }
+                    AwaitingChar::MacroPlay { count: saved_count } => {
+                        let reg = if c == '@' {
+                            self.last_macro_register
+                        } else {
+                            Some(c)
+                        };
+                        if let Some(reg) = reg {
+                            self.play_macro(reg, saved_count).await?;
+                        } else {
+                            self.status_message = "No previous macro".into();
+                        }
+                    }
+                }
             }
-            // Non-char cancelled the surround (already handled by input.rs).
+            // Non-InsertChar (shouldn't happen — input.rs returns EnterNormalMode
+            // for non-char keys, which clears awaiting_char before we get here).
+            return Ok(());
+        }
+
+        // Record action into macro buffer (if recording and not a macro control action).
+        if self.recording_macro.is_some()
+            && !matches!(action, Action::RecordMacro | Action::PlayMacro)
+        {
+            let recorded = if count > 1 {
+                std::iter::repeat(action.clone()).take(count).collect::<Vec<_>>()
+            } else {
+                vec![action.clone()]
+            };
+            if let Some((_, ref mut actions)) = self.recording_macro {
+                actions.extend(recorded);
+            }
         }
 
         // Operator-pending handling: compose operator + motion.
@@ -939,7 +1001,9 @@ impl Editor {
             }
             Action::EnterNormalMode => {
                 self.exit_visual_mode();
-                self.pending_surround = false;
+                self.awaiting_char = None;
+                self.pending_operator = None;
+                self.input.clear_pending();
                 // Clamp cursor back from insert-mode append position.
                 self.with_buffer(|b| {
                     let max_col = b.current_line_len().saturating_sub(1);
@@ -1146,9 +1210,23 @@ impl Editor {
                 self.visual_operate(VisualOp::Change);
             }
             Action::VisualSurround => {
-                self.pending_surround = true;
-                self.input.awaiting_char = true;
-                self.input.pending_display = "s".to_string();
+                self.enter_awaiting_char(AwaitingChar::Surround, "s");
+            }
+
+            // Macros
+            Action::RecordMacro => {
+                if self.recording_macro.is_some() {
+                    // Stop recording.
+                    let (reg, actions) = self.recording_macro.take().unwrap();
+                    self.macro_registers.insert(reg, actions);
+                    self.status_message = format!("Recorded @{}", reg);
+                } else {
+                    // Start recording — await register char.
+                    self.enter_awaiting_char(AwaitingChar::MacroRecord, "q");
+                }
+            }
+            Action::PlayMacro => {
+                self.enter_awaiting_char(AwaitingChar::MacroPlay { count }, "@");
             }
 
             Action::Noop => {}
@@ -1809,9 +1887,31 @@ impl Editor {
         self.pane_layout.active_pane_mut().switch_buffer(next_id);
     }
 
+    fn enter_awaiting_char(&mut self, state: AwaitingChar, display: &str) {
+        self.awaiting_char = Some(state);
+        self.input.awaiting_char = true;
+        self.input.pending_display = display.to_string();
+    }
+
     fn exit_visual_mode(&mut self) {
         self.input.mode = Mode::Normal;
         self.visual_anchor = None;
+    }
+
+    fn play_macro(&mut self, reg: char, count: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + '_>> {
+        Box::pin(async move {
+            if let Some(actions) = self.macro_registers.get(&reg).cloned() {
+                self.last_macro_register = Some(reg);
+                for _ in 0..count {
+                    for a in &actions {
+                        self.execute_action(a.clone()).await?;
+                    }
+                }
+            } else {
+                self.status_message = format!("Macro @{} is empty", reg);
+            }
+            Ok(())
+        })
     }
 
     fn rehighlight_active(&mut self) {

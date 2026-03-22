@@ -214,6 +214,9 @@ fn default_keymap() -> Keymap {
         ("?", Action::EnterSearchBackward),
         ("n", Action::SearchNext),
         ("N", Action::SearchPrev),
+        ("q", Action::RecordMacro),
+        ("@", Action::PlayMacro),
+        ("esc", Action::EnterNormalMode),
     ];
     bind_all(&mut keymap.normal, normal_bindings);
 

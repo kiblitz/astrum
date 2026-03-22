@@ -190,8 +190,8 @@ impl InputHandler {
                     return Action::InsertChar(c);
                 }
             }
-            // Non-char key cancels the await.
-            return Action::Noop;
+            // Non-char key (Esc, etc.) cancels the await and resets all pending state.
+            return Action::EnterNormalMode;
         }
 
         let input = KeyInput::from_event(&key);

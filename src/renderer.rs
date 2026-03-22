@@ -38,6 +38,7 @@ impl Renderer {
         search_direction: SearchDirection,
         visual_anchor: Option<(usize, usize)>,
         substitute_highlight: Option<(usize, usize, usize)>,
+        recording_macro: Option<char>,
     ) {
         let size = frame.area();
         let has_overlay = find_file.is_some() || palette.is_some();
@@ -110,6 +111,7 @@ impl Renderer {
             active_fb,
             search_buffer,
             search_direction,
+            recording_macro,
         );
 
         // Overlays
@@ -818,6 +820,7 @@ impl Renderer {
         file_browser: Option<&FileBrowser>,
         search_buffer: &str,
         search_direction: SearchDirection,
+        recording_macro: Option<char>,
     ) {
         // File browser input modes
         if let Some(fb) = file_browser {
@@ -901,6 +904,18 @@ impl Renderer {
                 "SPC for leader | : for commands | SPC q q to quit",
                 Style::default().fg(Color::DarkGray),
             ))
+        };
+
+        // Prepend recording indicator if active.
+        let content = if let Some(reg) = recording_macro {
+            let mut spans = vec![Span::styled(
+                format!("recording @{} ", reg),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )];
+            spans.extend(content.spans);
+            Line::from(spans)
+        } else {
+            content
         };
 
         frame.render_widget(Paragraph::new(content), area);

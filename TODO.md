@@ -12,7 +12,7 @@
 - [x] Search & replace (`:s/pattern/replacement/`)
 - [ ] Marks (`ma`, `'a`)
 - [ ] Named registers
-- [ ] Macros (`q`, `@`)
+- [x] Macros (`q`, `@`)
 - [ ] Comment toggle
 
 ## Tier 3 — Polish
