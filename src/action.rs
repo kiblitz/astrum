@@ -381,6 +381,21 @@ impl Action {
         )
     }
 
+    /// Whether this motion is exclusive (destination char NOT included in operator range).
+    /// Vim rule: inclusive motions include the destination, exclusive motions don't.
+    pub fn is_exclusive_motion(&self) -> bool {
+        matches!(
+            self,
+            Action::MoveLeft
+                | Action::MoveRight
+                | Action::MoveWordForward
+                | Action::MoveWordBackward
+                | Action::MoveBigWordForward
+                | Action::MoveBigWordBackward
+                | Action::MoveToLineStart
+        )
+    }
+
     /// Whether this motion operates on whole lines (linewise).
     pub fn is_linewise_motion(&self) -> bool {
         matches!(

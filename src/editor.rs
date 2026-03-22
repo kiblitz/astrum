@@ -1959,6 +1959,7 @@ impl Editor {
         let viewport_height = self.active_viewport_height();
         let motion = motion.clone();
         let linewise = motion.is_linewise_motion();
+        let exclusive = motion.is_exclusive_motion();
 
         // Compute the range by saving cursor, applying motion, reading new cursor.
         // Returns ((start, end), (orig_line, orig_col)).
@@ -1990,11 +1991,14 @@ impl Editor {
                 b.cursor.col = 0;
                 ((start, end), (orig_line, orig_col))
             } else {
-                // Characterwise: from start cursor to end cursor (inclusive).
+                // Characterwise: range depends on exclusive/inclusive.
+                // Exclusive motions don't include the destination character.
+                // Inclusive motions include it.
                 let start = b.char_idx_at(start_line, start_col);
                 let end = b.char_idx_at(end_line, end_col);
-                let (from, to) = if start <= end { (start, end + 1) } else { (end, start + 1) };
-                let to = to.min(b.rope.len_chars());
+                let (min, max) = if start <= end { (start, end) } else { (end, start) };
+                let to = if exclusive { max } else { max + 1 };
+                let (from, to) = (min, to.min(b.rope.len_chars()));
                 // Restore cursor to start of range.
                 if start <= end {
                     b.cursor.line = start_line;

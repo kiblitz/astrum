@@ -419,21 +419,18 @@ impl Buffer {
             let rope_line = self.rope.line(line);
             let line_len = line_len_no_newline(&rope_line);
 
-            // Skip current word chars.
-            while col < line_len {
-                if is_word_char(rope_line.char(col)) {
-                    col += 1;
-                } else {
-                    break;
+            // Skip current char class (word or punctuation).
+            if col < line_len {
+                let cls = char_class(rope_line.char(col));
+                if cls != CharClass::Whitespace {
+                    while col < line_len && char_class(rope_line.char(col)) == cls {
+                        col += 1;
+                    }
                 }
             }
-            // Skip non-word chars.
-            while col < line_len {
-                if !is_word_char(rope_line.char(col)) {
-                    col += 1;
-                } else {
-                    break;
-                }
+            // Skip whitespace.
+            while col < line_len && char_class(rope_line.char(col)) == CharClass::Whitespace {
+                col += 1;
             }
 
             if col < line_len {
@@ -466,22 +463,15 @@ impl Buffer {
             let rope_line = self.rope.line(line);
             let line_len = line_len_no_newline(&rope_line);
 
-            // Skip non-word chars.
-            while col < line_len {
-                if !is_word_char(rope_line.char(col)) {
-                    col += 1;
-                } else {
-                    break;
-                }
+            // Skip whitespace.
+            while col < line_len && char_class(rope_line.char(col)) == CharClass::Whitespace {
+                col += 1;
             }
-            // Skip word chars to find the end.
+            // Advance through current char class (word or punctuation) to end.
             if col < line_len {
-                while col + 1 < line_len {
-                    if is_word_char(rope_line.char(col + 1)) {
-                        col += 1;
-                    } else {
-                        break;
-                    }
+                let cls = char_class(rope_line.char(col));
+                while col + 1 < line_len && char_class(rope_line.char(col + 1)) == cls {
+                    col += 1;
                 }
                 self.cursor.line = line;
                 self.cursor.col = col;
@@ -514,18 +504,15 @@ impl Buffer {
 
         let rope_line = self.rope.line(line);
 
-        while col > 0 {
-            if !is_word_char(rope_line.char(col - 1)) {
-                col -= 1;
-            } else {
-                break;
-            }
+        // Skip whitespace backward.
+        while col > 0 && char_class(rope_line.char(col - 1)) == CharClass::Whitespace {
+            col -= 1;
         }
-        while col > 0 {
-            if is_word_char(rope_line.char(col - 1)) {
+        // Skip current char class (word or punctuation) backward.
+        if col > 0 {
+            let cls = char_class(rope_line.char(col - 1));
+            while col > 0 && char_class(rope_line.char(col - 1)) == cls {
                 col -= 1;
-            } else {
-                break;
             }
         }
 
@@ -820,6 +807,24 @@ impl Buffer {
 /// Whether a character is a "word" character (alphanumeric or underscore).
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Vim character class: Word, Punctuation (non-blank non-word), or Whitespace.
+#[derive(PartialEq, Eq)]
+enum CharClass {
+    Word,
+    Punctuation,
+    Whitespace,
+}
+
+fn char_class(c: char) -> CharClass {
+    if is_word_char(c) {
+        CharClass::Word
+    } else if c.is_whitespace() {
+        CharClass::Whitespace
+    } else {
+        CharClass::Punctuation
+    }
 }
 
 fn line_len_no_newline(line: &ropey::RopeSlice<'_>) -> usize {
