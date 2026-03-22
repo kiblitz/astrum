@@ -1621,11 +1621,10 @@ impl Editor {
     fn jump_back(&mut self) {
         let current = self.current_jump_position();
         let stacks = self.jump_stacks_mut();
-        if let Some(cur) = current {
-            stacks.1.push(cur);
-        }
-        let pos = stacks.0.pop();
-        if let Some(pos) = pos {
+        if let Some(pos) = stacks.0.pop() {
+            if let Some(cur) = current {
+                stacks.1.push(cur);
+            }
             self.restore_jump(pos);
         } else {
             self.status_message = "No older jump position".into();
@@ -1635,11 +1634,10 @@ impl Editor {
     fn jump_forward(&mut self) {
         let current = self.current_jump_position();
         let stacks = self.jump_stacks_mut();
-        if let Some(cur) = current {
-            stacks.0.push(cur);
-        }
-        let pos = stacks.1.pop();
-        if let Some(pos) = pos {
+        if let Some(pos) = stacks.1.pop() {
+            if let Some(cur) = current {
+                stacks.0.push(cur);
+            }
             self.restore_jump(pos);
         } else {
             self.status_message = "No newer jump position".into();
