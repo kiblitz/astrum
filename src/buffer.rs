@@ -178,7 +178,7 @@ impl Buffer {
         (start, end)
     }
 
-    fn clamp_cursor(&mut self) {
+    pub fn clamp_cursor(&mut self) {
         let line_count = self.line_count();
         if self.cursor.line >= line_count {
             self.cursor.line = line_count.saturating_sub(1);

@@ -27,6 +27,9 @@ tree-sitter-toml-ng = "0.7.0"
 tree-sitter-c = "0.24.1"
 tree-sitter-cpp = "0.23.4"
 
+[dev-dependencies]
+expect-test = "1.4"
+
 [profile.release]
 opt-level = 3
 lto = true

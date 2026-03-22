@@ -1,18 +1,6 @@
-mod action;
-mod buffer;
-mod config;
-mod editor;
-mod file_browser;
-mod input;
-mod keymap;
-mod pane;
-mod renderer;
-mod swap;
-mod syntax;
-
 use anyhow::Result;
-use config::Config;
-use editor::Editor;
+use astrum::config::Config;
+use astrum::editor::Editor;
 
 #[tokio::main]
 async fn main() -> Result<()> {

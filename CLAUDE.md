@@ -16,7 +16,12 @@
 ```
 cargo build
 cargo run -- [file...]
+cargo test
+UPDATE_EXPECT=1 cargo test   # auto-update expect test snapshots
 ```
+
+## Testing
+Use **expect tests** (`expect-test` crate) for buffer operations, motions, and any logic that can be exercised without a terminal. Tests live in `tests/` as integration tests (e.g. `tests/buffer_tests.rs`). The crate exposes a library target (`src/lib.rs`) so integration tests can import `astrum::buffer::Buffer` etc. When adding or fixing buffer/motion/editing behavior, add or update expect tests to cover the change. This is the primary regression safety net.
 
 ## Architecture
 - **editor.rs** — Main event loop, action dispatch, orchestration
@@ -98,6 +103,19 @@ Vim-style operator + motion composition.
 - Same operator repeated = linewise (dd, cc, yy) via `execute_linewise_operator()`
 - Counts multiply: `2d3w` = delete 6 words (op_count * motion_count)
 - Buffer methods: `delete_char_range(start, end)`, `text_in_char_range(start, end)`, `char_idx_at(line, col)`
+
+### Word motions and char classes
+Three character classes: **Word** (alphanumeric + `_`), **Punctuation** (non-blank non-word), **Whitespace**. Each class forms its own "word" — `w` on `main()` stops at `(`, not after `)`.
+
+- `w`: skip current class → skip whitespace → land on next non-whitespace
+- `b`: skip whitespace backward → skip class backward → land at start
+- `e`: skip whitespace → advance through class → land at end
+
+### Exclusive vs inclusive motions
+Operator ranges respect vim's exclusive/inclusive semantics (`is_exclusive_motion()` on Action):
+- **Exclusive** (`w`, `W`, `b`, `B`, `h`, `l`, `0`): destination char NOT included in range
+- **Inclusive** (`e`, `E`, `$`): destination char IS included
+- `apply_motion()` is the single dispatch table for all motion→buffer mappings
 
 ### Count prefix
 - Digits accumulate in `input.count_prefix` in input.rs (normal mode only, `0` only counts if prefix already started)
