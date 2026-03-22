@@ -180,8 +180,11 @@ fn default_keymap() -> Keymap {
         ("u", Action::Undo),
         ("C-r", Action::Redo),
         ("d", Action::OperatorDelete),
+        ("D", Action::DeleteToLineEnd),
         ("c", Action::OperatorChange),
+        ("C", Action::ChangeToLineEnd),
         ("y", Action::OperatorYank),
+        ("Y", Action::YankLine),
         ("p", Action::Paste),
         ("P", Action::PasteBefore),
         ("space f f", Action::OpenFileBrowser),
@@ -396,8 +399,11 @@ keymap {
         u "Undo"
         C-r "Redo"
         d "OperatorDelete"
+        D "DeleteToLineEnd"
         c "OperatorChange"
+        C "ChangeToLineEnd"
         y "OperatorYank"
+        Y "YankLine"
 
         // Clipboard
         p "Paste"

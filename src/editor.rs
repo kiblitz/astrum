@@ -892,6 +892,7 @@ impl Editor {
         // repeated with early break when cursor stops moving.
         if action.is_motion() || matches!(action, Action::ScrollUp | Action::ScrollDown) {
             self.repeat_motion(count, &action, viewport_height);
+            self.scroll_to_cursor(viewport_height);
             return Ok(());
         }
 
@@ -917,6 +918,20 @@ impl Editor {
             Action::DeleteLine => {
                 for _ in 0..count {
                     self.with_buffer_edit(|b| b.delete_line());
+                }
+            }
+            Action::DeleteToLineEnd | Action::ChangeToLineEnd => {
+                let range = self.sync_buffer(|b| {
+                    let start = b.char_idx_at(b.cursor.line, b.cursor.col);
+                    let end = b.char_idx_at(b.cursor.line, b.current_line_len());
+                    (start, end)
+                });
+                if let Some((start, end)) = range {
+                    self.yank_range(start, end);
+                    self.with_buffer_edit(|b| b.delete_char_range(start, end));
+                }
+                if action == Action::ChangeToLineEnd {
+                    self.input.mode = Mode::Insert;
                 }
             }
 
@@ -1065,19 +1080,14 @@ impl Editor {
             }
 
             // Window management
-            Action::SplitVertical => {
+            Action::SplitVertical | Action::SplitHorizontal => {
+                let dir = if action == Action::SplitVertical {
+                    SplitDirection::Vertical
+                } else {
+                    SplitDirection::Horizontal
+                };
                 let old_id = self.pane_layout.active_id;
-                let new_id = self.pane_layout.split(SplitDirection::Vertical);
-                if let Some(fb) = self.file_browsers.get(&old_id).cloned() {
-                    self.file_browsers.insert(new_id, fb);
-                }
-                if let Some(history) = self.jump_history.get(&old_id).cloned() {
-                    self.jump_history.insert(new_id, history);
-                }
-            }
-            Action::SplitHorizontal => {
-                let old_id = self.pane_layout.active_id;
-                let new_id = self.pane_layout.split(SplitDirection::Horizontal);
+                let new_id = self.pane_layout.split(dir);
                 if let Some(fb) = self.file_browsers.get(&old_id).cloned() {
                     self.file_browsers.insert(new_id, fb);
                 }
@@ -1235,16 +1245,7 @@ impl Editor {
             _ => {}
         }
 
-        // Scroll to keep cursor visible (on the pane directly).
-        {
-            let pane = self.pane_layout.active_pane_mut();
-            if pane.cursor.line < pane.scroll_offset {
-                pane.scroll_offset = pane.cursor.line;
-            }
-            if pane.cursor.line >= pane.scroll_offset + viewport_height {
-                pane.scroll_offset = pane.cursor.line - viewport_height + 1;
-            }
-        }
+        self.scroll_to_cursor(viewport_height);
 
         Ok(())
     }
@@ -1837,6 +1838,17 @@ impl Editor {
                 }
             }
         });
+    }
+
+    /// Adjust scroll offset so the cursor stays visible.
+    fn scroll_to_cursor(&mut self, viewport_height: usize) {
+        let pane = self.pane_layout.active_pane_mut();
+        if pane.cursor.line < pane.scroll_offset {
+            pane.scroll_offset = pane.cursor.line;
+        }
+        if pane.cursor.line >= pane.scroll_offset + viewport_height {
+            pane.scroll_offset = pane.cursor.line - viewport_height + 1;
+        }
     }
 
     /// Call a buffer edit method that returns Option<EditInfo>, then do
@@ -2461,7 +2473,18 @@ impl Editor {
                 let start = b.char_idx_at(start_line, start_col);
                 let end = b.char_idx_at(end_line, end_col);
                 let (min, max) = if start <= end { (start, end) } else { (end, start) };
-                let to = if exclusive { max } else { max + 1 };
+                let mut to = if exclusive { max } else { max + 1 };
+                // When an exclusive motion is clamped at a boundary (cursor
+                // didn't move), the range is empty. Forward motions should
+                // still act on one character (e.g. `dl` at end of line
+                // deletes the last char). Backward motions correctly do
+                // nothing (e.g. `dh` at start of line). On empty lines,
+                // do nothing — there's no character to act on.
+                if min == to && exclusive && !motion.is_backward_motion()
+                    && b.current_line_len() > 0
+                {
+                    to = (min + 1).min(b.rope.len_chars());
+                }
                 let (from, to) = (min, to.min(b.rope.len_chars()));
                 // Restore cursor to start of range.
                 if start <= end {
@@ -2486,11 +2509,14 @@ impl Editor {
 
         match op {
             Action::OperatorDelete => {
+                // Temporarily restore original cursor so save_undo captures it.
+                self.with_buffer(|b| { b.cursor.line = orig_line; b.cursor.col = orig_col; });
                 self.yank_range(start, end);
                 self.with_buffer_edit(|b| b.delete_char_range(start, end));
                 self.rehighlight_active();
             }
             Action::OperatorChange => {
+                self.with_buffer(|b| { b.cursor.line = orig_line; b.cursor.col = orig_col; });
                 self.with_buffer_edit(|b| b.delete_char_range(start, end));
                 self.rehighlight_active();
                 self.input.mode = Mode::Insert;

@@ -214,14 +214,28 @@ fn word_forward_across_line() {
 fn word_forward_at_end_of_file() {
     let mut b = buf("hello", 0, 3);
     b.move_word_forward();
-    check(&pos(&b), expect!["(0,0)"]);
+    check(&pos(&b), expect!["(0,4)"]);
 }
 
 #[test]
 fn word_forward_trailing_spaces() {
     let mut b = buf("hello   ", 0, 0);
     b.move_word_forward();
-    check(&pos(&b), expect!["(0,0)"]);
+    check(&pos(&b), expect!["(0,7)"]);
+}
+
+#[test]
+fn word_forward_last_line_stays() {
+    let mut b = buf("aaa\nbbb", 1, 0);
+    b.move_word_forward();
+    check(&pos(&b), expect!["(1,2)"]);
+}
+
+#[test]
+fn word_forward_last_line_multi_word() {
+    let mut b = buf("aaa\nhello world", 1, 0);
+    b.move_word_forward();
+    check(&pos(&b), expect!["(1,6)"]);
 }
 
 // -- word backward --

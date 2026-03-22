@@ -49,6 +49,8 @@ pub enum Action {
     DeleteCharForward,
     DeleteWordBackward,
     DeleteLine,
+    DeleteToLineEnd,
+    ChangeToLineEnd,
     InsertLineBelow,
     InsertLineAbove,
     Undo,
@@ -172,6 +174,8 @@ impl Action {
             "DeleteCharForward" => Some(Action::DeleteCharForward),
             "DeleteWordBackward" => Some(Action::DeleteWordBackward),
             "DeleteLine" => Some(Action::DeleteLine),
+            "DeleteToLineEnd" => Some(Action::DeleteToLineEnd),
+            "ChangeToLineEnd" => Some(Action::ChangeToLineEnd),
             "InsertLineBelow" => Some(Action::InsertLineBelow),
             "InsertLineAbove" => Some(Action::InsertLineAbove),
             "Undo" => Some(Action::Undo),
@@ -263,6 +267,8 @@ impl Action {
             Action::DeleteCharForward => "Delete char forward",
             Action::DeleteWordBackward => "Delete word backward",
             Action::DeleteLine => "Delete line",
+            Action::DeleteToLineEnd => "Delete to line end",
+            Action::ChangeToLineEnd => "Change to line end",
             Action::InsertLineBelow => "Insert line below",
             Action::InsertLineAbove => "Insert line above",
             Action::Undo => "Undo",
@@ -343,7 +349,8 @@ impl Action {
             Action::PageUp, Action::PageDown, Action::HalfPageUp, Action::HalfPageDown,
             Action::ScrollUp, Action::ScrollDown,
             Action::InsertNewline, Action::DeleteCharBackward, Action::DeleteCharForward, Action::DeleteWordBackward,
-            Action::DeleteLine, Action::InsertLineBelow, Action::InsertLineAbove,
+            Action::DeleteLine, Action::DeleteToLineEnd, Action::ChangeToLineEnd,
+            Action::InsertLineBelow, Action::InsertLineAbove,
             Action::Undo, Action::Redo,
             Action::YankLine, Action::Paste, Action::PasteBefore,
             Action::OperatorDelete, Action::OperatorChange, Action::OperatorYank,
@@ -406,6 +413,19 @@ impl Action {
                 | Action::MoveWordForward
                 | Action::MoveWordBackward
                 | Action::MoveBigWordForward
+                | Action::MoveBigWordBackward
+                | Action::MoveToLineStart
+        )
+    }
+
+    /// Whether this motion moves backward (left/up direction).
+    /// Used to resolve empty operator ranges: forward motions clamped at a
+    /// boundary still act on one character, backward motions don't.
+    pub fn is_backward_motion(&self) -> bool {
+        matches!(
+            self,
+            Action::MoveLeft
+                | Action::MoveWordBackward
                 | Action::MoveBigWordBackward
                 | Action::MoveToLineStart
         )
