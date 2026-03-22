@@ -411,16 +411,19 @@ impl Buffer {
 
     pub fn move_word_forward(&mut self) {
         let line_count = self.line_count();
-        let mut line = self.cursor.line;
+        let start_line = self.cursor.line;
+        let mut line = start_line;
         let mut col = self.cursor.col;
 
-        loop {
+        // Try current line first, then at most the next line.
+        for _ in 0..2 {
             if line >= line_count {
                 break;
             }
             let rope_line = self.rope.line(line);
             let line_len = line_len_no_newline(&rope_line);
 
+            // Skip current word chars.
             while col < line_len {
                 if rope_line.char(col).is_alphanumeric() || rope_line.char(col) == '_' {
                     col += 1;
@@ -428,6 +431,7 @@ impl Buffer {
                     break;
                 }
             }
+            // Skip non-word chars.
             while col < line_len {
                 if !rope_line.char(col).is_alphanumeric() && rope_line.char(col) != '_' {
                     col += 1;
@@ -446,8 +450,10 @@ impl Buffer {
             col = 0;
         }
 
-        self.cursor.line = line_count.saturating_sub(1);
-        self.cursor.col = self.current_line_len();
+        // Landed at start of line (at most 1 line ahead) or end of file.
+        let target_line = (start_line + 1).min(line_count.saturating_sub(1));
+        self.cursor.line = target_line;
+        self.cursor.col = 0;
     }
 
     pub fn move_word_backward(&mut self) {

@@ -676,13 +676,13 @@ impl Editor {
         let viewport_height = self.active_viewport_height();
 
         match action {
-            // Movement (with count)
-            Action::MoveUp => self.with_buffer(|b| { for _ in 0..count { b.move_up(); } }),
-            Action::MoveDown => self.with_buffer(|b| { for _ in 0..count { b.move_down(); } }),
-            Action::MoveLeft => self.with_buffer(|b| { for _ in 0..count { b.move_left(); } }),
-            Action::MoveRight => self.with_buffer(|b| { for _ in 0..count { b.move_right(); } }),
-            Action::MoveWordForward => self.with_buffer(|b| { for _ in 0..count { b.move_word_forward(); } }),
-            Action::MoveWordBackward => self.with_buffer(|b| { for _ in 0..count { b.move_word_backward(); } }),
+            // Movement (with count, stops when cursor doesn't move)
+            Action::MoveUp => self.repeat_motion(count, |b| b.move_up()),
+            Action::MoveDown => self.repeat_motion(count, |b| b.move_down()),
+            Action::MoveLeft => self.repeat_motion(count, |b| b.move_left()),
+            Action::MoveRight => self.repeat_motion(count, |b| b.move_right()),
+            Action::MoveWordForward => self.repeat_motion(count, |b| b.move_word_forward()),
+            Action::MoveWordBackward => self.repeat_motion(count, |b| b.move_word_backward()),
             Action::MoveToLineStart => self.with_buffer(|b| b.move_to_line_start()),
             Action::MoveToLineEnd => self.with_buffer(|b| b.move_to_line_end()),
             Action::MoveToFirstLine => {
@@ -691,20 +691,12 @@ impl Editor {
             Action::MoveToLastLine => {
                 self.with_buffer(|b| b.move_to_last_line());
             }
-            Action::PageUp => {
-                self.with_buffer(|b| { for _ in 0..count { b.page_up(viewport_height); } });
-            }
-            Action::PageDown => {
-                self.with_buffer(|b| { for _ in 0..count { b.page_down(viewport_height); } });
-            }
-            Action::HalfPageUp => {
-                self.with_buffer(|b| { for _ in 0..count { b.half_page_up(viewport_height); } });
-            }
-            Action::HalfPageDown => {
-                self.with_buffer(|b| { for _ in 0..count { b.half_page_down(viewport_height); } });
-            }
-            Action::ScrollUp => self.with_buffer(|b| { for _ in 0..count { b.scroll_up(viewport_height); } }),
-            Action::ScrollDown => self.with_buffer(|b| { for _ in 0..count { b.scroll_down(viewport_height); } }),
+            Action::PageUp => self.repeat_motion(count, |b| b.page_up(viewport_height)),
+            Action::PageDown => self.repeat_motion(count, |b| b.page_down(viewport_height)),
+            Action::HalfPageUp => self.repeat_motion(count, |b| b.half_page_up(viewport_height)),
+            Action::HalfPageDown => self.repeat_motion(count, |b| b.half_page_down(viewport_height)),
+            Action::ScrollUp => self.repeat_motion(count, |b| b.scroll_up(viewport_height)),
+            Action::ScrollDown => self.repeat_motion(count, |b| b.scroll_down(viewport_height)),
             Action::GotoLine(line) => {
                 self.with_buffer(|b| b.goto_line(line));
             }
@@ -1606,6 +1598,22 @@ impl Editor {
         F: FnOnce(&mut Buffer),
     {
         self.sync_buffer(f);
+    }
+
+    /// Repeat a motion `count` times, stopping early if the cursor doesn't move.
+    fn repeat_motion<F>(&mut self, count: usize, mut f: F)
+    where
+        F: FnMut(&mut Buffer),
+    {
+        self.sync_buffer(|b| {
+            for _ in 0..count {
+                let prev = (b.cursor.line, b.cursor.col);
+                f(b);
+                if (b.cursor.line, b.cursor.col) == prev {
+                    break;
+                }
+            }
+        });
     }
 
     /// Call a buffer edit method that returns Option<EditInfo>, then do

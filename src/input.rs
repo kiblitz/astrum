@@ -138,8 +138,10 @@ impl InputHandler {
                 if c.is_ascii_digit() && !input.ctrl && !input.alt {
                     if self.count_prefix.is_some() || c != '0' {
                         let digit = c.to_digit(10).unwrap() as usize;
-                        self.count_prefix =
-                            Some(self.count_prefix.unwrap_or(0) * 10 + digit);
+                        let current = self.count_prefix.unwrap_or(0);
+                        self.count_prefix = Some(
+                            current.saturating_mul(10).saturating_add(digit)
+                        );
                         return Action::Noop;
                     }
                 }
