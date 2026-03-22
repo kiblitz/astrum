@@ -131,12 +131,18 @@ fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("astrum").join("config.kdl"))
 }
 
+fn bind_all(mode: &mut crate::keymap::ModeKeymap, bindings: &[(&str, Action)]) {
+    for (seq, action) in bindings {
+        if let Some(keys) = parse_key_sequence(seq) {
+            mode.bind(&keys, action.clone())
+                .unwrap_or_else(|e| panic!("default keymap bug: {}", e));
+        }
+    }
+}
+
 /// Build the default keymap (vim-style with spacemacs leader).
 fn default_keymap() -> Keymap {
     let mut keymap = Keymap::new();
-
-    // --- Normal mode ---
-    let n = &mut keymap.normal;
     let normal_bindings: &[(&str, Action)] = &[
         ("h", Action::MoveLeft),
         ("j", Action::MoveDown),
@@ -209,15 +215,9 @@ fn default_keymap() -> Keymap {
         ("n", Action::SearchNext),
         ("N", Action::SearchPrev),
     ];
-    for (seq, action) in normal_bindings {
-        if let Some(keys) = parse_key_sequence(seq) {
-            n.bind(&keys, action.clone())
-                .unwrap_or_else(|e| panic!("default keymap bug: {}", e));
-        }
-    }
+    bind_all(&mut keymap.normal, normal_bindings);
 
     // --- Insert mode ---
-    let i = &mut keymap.insert;
     let insert_bindings: &[(&str, Action)] = &[
         ("esc", Action::EnterNormalMode),
         ("C-s", Action::SaveBuffer),
@@ -231,15 +231,9 @@ fn default_keymap() -> Keymap {
         ("up", Action::MoveUp),
         ("down", Action::MoveDown),
     ];
-    for (seq, action) in insert_bindings {
-        if let Some(keys) = parse_key_sequence(seq) {
-            i.bind(&keys, action.clone())
-                .unwrap_or_else(|e| panic!("default keymap bug: {}", e));
-        }
-    }
+    bind_all(&mut keymap.insert, insert_bindings);
 
     // --- Visual mode ---
-    let v = &mut keymap.visual;
     let visual_bindings: &[(&str, Action)] = &[
         ("esc", Action::EnterNormalMode),
         ("v", Action::EnterNormalMode),
@@ -269,15 +263,9 @@ fn default_keymap() -> Keymap {
         ("c", Action::VisualChange),
         ("s", Action::VisualSurround),
     ];
-    for (seq, action) in visual_bindings {
-        if let Some(keys) = parse_key_sequence(seq) {
-            v.bind(&keys, action.clone())
-                .unwrap_or_else(|e| panic!("default keymap bug: {}", e));
-        }
-    }
+    bind_all(&mut keymap.visual, visual_bindings);
 
     // --- Browser navigate mode ---
-    let b = &mut keymap.browser;
     let browser_bindings: &[(&str, Action)] = &[
         ("h", Action::MoveLeft),
         ("j", Action::MoveDown),
@@ -327,12 +315,7 @@ fn default_keymap() -> Keymap {
         ("space space", Action::CommandPalette),
         (":", Action::EnterCommandMode),
     ];
-    for (seq, action) in browser_bindings {
-        if let Some(keys) = parse_key_sequence(seq) {
-            b.bind(&keys, action.clone())
-                .unwrap_or_else(|e| panic!("default keymap bug: {}", e));
-        }
-    }
+    bind_all(&mut keymap.browser, browser_bindings);
 
     keymap
 }

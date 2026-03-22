@@ -121,6 +121,35 @@ impl Buffer {
         self.content_hash = None;
     }
 
+    pub fn mark_modified(&mut self) {
+        self.modified = true;
+        self.invalidate_hash();
+    }
+
+    /// Build an EditInfo for a deletion (new_end == start, content shrank).
+    fn edit_info_delete(&self, start_char: usize, end_char: usize) -> EditInfo {
+        EditInfo {
+            start_byte: self.rope.char_to_byte(start_char),
+            old_end_byte: self.rope.char_to_byte(end_char),
+            new_end_byte: self.rope.char_to_byte(start_char),
+            start_position: self.position_at_char(start_char),
+            old_end_position: self.position_at_char(end_char),
+            new_end_position: self.position_at_char(start_char),
+        }
+    }
+
+    /// Build an EditInfo for an insertion (old_end == start, content grew).
+    fn edit_info_insert(&self, start_char: usize, new_end_char: usize) -> EditInfo {
+        EditInfo {
+            start_byte: self.rope.char_to_byte(start_char),
+            old_end_byte: self.rope.char_to_byte(start_char),
+            new_end_byte: self.rope.char_to_byte(new_end_char),
+            start_position: self.position_at_char(start_char),
+            old_end_position: self.position_at_char(start_char),
+            new_end_position: self.position_at_char(new_end_char),
+        }
+    }
+
     pub fn save_undo(&mut self) {
         self.undo_stack.push(UndoEntry {
             rope_snapshot: self.rope.clone(),
@@ -199,27 +228,15 @@ impl Buffer {
     pub fn insert_char(&mut self, ch: char) -> Option<EditInfo> {
         self.save_undo();
         let idx = self.cursor_char_idx();
-        let start_byte = self.rope.char_to_byte(idx);
-        let start_pos = self.position_at_char(idx);
         self.rope.insert_char(idx, ch);
-        let new_end_byte = start_byte + ch.len_utf8();
-        let new_end_pos = self.position_at_char(idx + 1);
         if ch == '\n' {
             self.cursor.line += 1;
             self.cursor.col = 0;
         } else {
             self.cursor.col += 1;
         }
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte: start_byte,
-            new_end_byte,
-            start_position: start_pos,
-            old_end_position: start_pos,
-            new_end_position: new_end_pos,
-        })
+        self.mark_modified();
+        Some(self.edit_info_insert(idx, idx + 1))
     }
 
     pub fn insert_newline(&mut self) -> Option<EditInfo> {
@@ -227,18 +244,12 @@ impl Buffer {
     }
 
     pub fn delete_char_backward(&mut self) -> Option<EditInfo> {
-        if self.cursor.col == 0 && self.cursor.line == 0 {
-            return None;
-        }
-        self.save_undo();
         let idx = self.cursor_char_idx();
         if idx == 0 {
             return None;
         }
-        let start_byte = self.rope.char_to_byte(idx - 1);
-        let old_end_byte = self.rope.char_to_byte(idx);
-        let start_pos = self.position_at_char(idx - 1);
-        let old_end_pos = self.position_at_char(idx);
+        self.save_undo();
+        let info = self.edit_info_delete(idx - 1, idx);
         self.rope.remove(idx - 1..idx);
         if self.cursor.col == 0 {
             self.cursor.line -= 1;
@@ -246,54 +257,34 @@ impl Buffer {
         } else {
             self.cursor.col -= 1;
         }
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte,
-            new_end_byte: start_byte,
-            start_position: start_pos,
-            old_end_position: old_end_pos,
-            new_end_position: start_pos,
-        })
+        self.mark_modified();
+        Some(info)
     }
 
     pub fn delete_word_backward(&mut self) -> Option<EditInfo> {
-        if self.cursor.col == 0 && self.cursor.line == 0 {
-            return None;
-        }
         let end_idx = self.cursor_char_idx();
         if end_idx == 0 {
             return None;
         }
 
-        // Save undo before moving so that undo restores the original cursor.
-        self.save_undo();
-
+        // Probe where word-backward would land without committing yet.
+        let saved = self.cursor;
         self.move_word_backward();
         let start_idx = self.cursor_char_idx();
 
         if start_idx == end_idx {
-            // Nothing to delete — pop the undo we just saved.
-            self.undo_stack.pop();
+            self.cursor = saved;
             return None;
         }
-        let start_byte = self.rope.char_to_byte(start_idx);
-        let old_end_byte = self.rope.char_to_byte(end_idx);
-        let start_pos = self.position_at_char(start_idx);
-        let old_end_pos = self.position_at_char(end_idx);
+
+        // Now we know the edit will happen — save undo with the original cursor.
+        self.cursor = saved;
+        self.save_undo();
+        let info = self.edit_info_delete(start_idx, end_idx);
         self.rope.remove(start_idx..end_idx);
-        // Cursor is already at the right position from move_word_backward.
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte,
-            new_end_byte: start_byte,
-            start_position: start_pos,
-            old_end_position: old_end_pos,
-            new_end_position: start_pos,
-        })
+        self.cursor_to_char_pos(start_idx);
+        self.mark_modified();
+        Some(info)
     }
 
     pub fn delete_char_forward(&mut self) -> Option<EditInfo> {
@@ -302,49 +293,24 @@ impl Buffer {
             return None;
         }
         self.save_undo();
-        let start_byte = self.rope.char_to_byte(idx);
-        let old_end_byte = self.rope.char_to_byte(idx + 1);
-        let start_pos = self.position_at_char(idx);
-        let old_end_pos = self.position_at_char(idx + 1);
+        let info = self.edit_info_delete(idx, idx + 1);
         self.rope.remove(idx..idx + 1);
         self.clamp_cursor();
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte,
-            new_end_byte: start_byte,
-            start_position: start_pos,
-            old_end_position: old_end_pos,
-            new_end_position: start_pos,
-        })
+        self.mark_modified();
+        Some(info)
     }
 
     pub fn delete_line(&mut self) -> Option<EditInfo> {
-        if self.rope.len_lines() == 0 {
-            return None;
-        }
-        self.save_undo();
         let (line_start, line_end) = self.linewise_range(self.cursor.line, self.cursor.line);
         if line_start >= line_end {
             return None;
         }
-        let start_byte = self.rope.char_to_byte(line_start);
-        let old_end_byte = self.rope.char_to_byte(line_end);
-        let start_pos = self.position_at_char(line_start);
-        let old_end_pos = self.position_at_char(line_end);
+        self.save_undo();
+        let info = self.edit_info_delete(line_start, line_end);
         self.rope.remove(line_start..line_end);
         self.clamp_cursor();
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte,
-            new_end_byte: start_byte,
-            start_position: start_pos,
-            old_end_position: old_end_pos,
-            new_end_position: start_pos,
-        })
+        self.mark_modified();
+        Some(info)
     }
 
     /// Delete a range of characters by char index. Cursor is placed at `start`.
@@ -354,26 +320,12 @@ impl Buffer {
         }
         let end = end.min(self.rope.len_chars());
         self.save_undo();
-        let start_byte = self.rope.char_to_byte(start);
-        let old_end_byte = self.rope.char_to_byte(end);
-        let start_pos = self.position_at_char(start);
-        let old_end_pos = self.position_at_char(end);
+        let info = self.edit_info_delete(start, end);
         self.rope.remove(start..end);
-        // Place cursor at the start of the deleted range.
-        self.cursor.line = self.rope.char_to_line(start.min(self.rope.len_chars().saturating_sub(1).max(0)));
-        let line_start = self.rope.line_to_char(self.cursor.line);
-        self.cursor.col = start.saturating_sub(line_start);
+        self.cursor_to_char_pos(start);
         self.clamp_cursor();
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte,
-            new_end_byte: start_byte,
-            start_position: start_pos,
-            old_end_position: old_end_pos,
-            new_end_position: start_pos,
-        })
+        self.mark_modified();
+        Some(info)
     }
 
     /// Extract text in a char range (for yanking).
@@ -653,44 +605,20 @@ impl Buffer {
         // Otherwise ropey creates only a phantom empty line that line_count() hides.
         let has_nl = line_chars > 0 && line.char(line_chars - 1) == '\n';
         let text = if has_nl { "\n" } else { "\n\n" };
-        let start_byte = self.rope.char_to_byte(insert_at);
-        let start_pos = self.position_at_char(insert_at);
         self.rope.insert(insert_at, text);
-        let new_end_byte = start_byte + text.len();
-        let new_end_pos = self.position_at_char(insert_at + text.len());
         self.cursor.line += 1;
         self.cursor.col = 0;
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte: start_byte,
-            new_end_byte,
-            start_position: start_pos,
-            old_end_position: start_pos,
-            new_end_position: new_end_pos,
-        })
+        self.mark_modified();
+        Some(self.edit_info_insert(insert_at, insert_at + text.len()))
     }
 
     pub fn insert_line_above(&mut self) -> Option<EditInfo> {
         self.save_undo();
         let line_start = self.rope.line_to_char(self.cursor.line);
-        let start_byte = self.rope.char_to_byte(line_start);
-        let start_pos = self.position_at_char(line_start);
         self.rope.insert_char(line_start, '\n');
-        let new_end_byte = start_byte + 1;
-        let new_end_pos = self.position_at_char(line_start + 1);
         self.cursor.col = 0;
-        self.modified = true;
-        self.invalidate_hash();
-        Some(EditInfo {
-            start_byte,
-            old_end_byte: start_byte,
-            new_end_byte,
-            start_position: start_pos,
-            old_end_position: start_pos,
-            new_end_position: new_end_pos,
-        })
+        self.mark_modified();
+        Some(self.edit_info_insert(line_start, line_start + 1))
     }
 
     pub fn page_up(&mut self, page_size: usize) {
@@ -797,8 +725,7 @@ impl Buffer {
             }
             self.clamp_cursor();
         }
-        self.modified = true;
-        self.invalidate_hash();
+        self.mark_modified();
     }
 
     /// Paste text before the current line. Returns None — caller should do full re-parse.
@@ -815,8 +742,15 @@ impl Buffer {
             let idx = self.cursor_char_idx();
             self.rope.insert(idx, text);
         }
-        self.modified = true;
-        self.invalidate_hash();
+        self.mark_modified();
+    }
+
+    /// Set cursor to the (line, col) corresponding to a char index.
+    fn cursor_to_char_pos(&mut self, char_idx: usize) {
+        let clamped = char_idx.min(self.rope.len_chars().saturating_sub(1));
+        self.cursor.line = self.rope.char_to_line(clamped);
+        let line_start = self.rope.line_to_char(self.cursor.line);
+        self.cursor.col = char_idx.saturating_sub(line_start);
     }
 
     fn cursor_char_idx(&self) -> usize {

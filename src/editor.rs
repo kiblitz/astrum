@@ -938,8 +938,7 @@ impl Editor {
                 self.input.mode = Mode::Insert;
             }
             Action::EnterNormalMode => {
-                self.input.mode = Mode::Normal;
-                self.visual_anchor = None;
+                self.exit_visual_mode();
                 self.pending_surround = false;
                 // Clamp cursor back from insert-mode append position.
                 self.with_buffer(|b| {
@@ -952,8 +951,7 @@ impl Editor {
             Action::EnterVisualMode => {
                 if self.input.mode == Mode::Visual {
                     // Toggle off: v again exits visual mode.
-                    self.input.mode = Mode::Normal;
-                    self.visual_anchor = None;
+                    self.exit_visual_mode();
                 } else {
                     let pane = self.pane_layout.active_pane();
                     self.visual_anchor = Some((pane.cursor.line, pane.cursor.col));
@@ -993,26 +991,10 @@ impl Editor {
 
             // Buffer management
             Action::NextBuffer => {
-                if !self.buffers.is_empty() {
-                    self.push_jump();
-                    let cur_idx = self.active_buffer_idx().unwrap_or(0);
-                    let next_idx = (cur_idx + 1) % self.buffers.len();
-                    let next_id = self.buffers[next_idx].id;
-                    self.pane_layout.active_pane_mut().switch_buffer(next_id);
-                }
+                self.switch_buffer_by_offset(1);
             }
             Action::PrevBuffer => {
-                if !self.buffers.is_empty() {
-                    self.push_jump();
-                    let cur_idx = self.active_buffer_idx().unwrap_or(0);
-                    let prev_idx = if cur_idx == 0 {
-                        self.buffers.len() - 1
-                    } else {
-                        cur_idx - 1
-                    };
-                    let prev_id = self.buffers[prev_idx].id;
-                    self.pane_layout.active_pane_mut().switch_buffer(prev_id);
-                }
+                self.switch_buffer_by_offset(-1);
             }
             Action::CloseBuffer => {
                 self.close_current_buffer(false);
@@ -1351,24 +1333,10 @@ impl Editor {
                 self.open_file_browser(dir).await?;
             }
             Some("bn") | Some("bnext") => {
-                if !self.buffers.is_empty() {
-                    let cur_idx = self.active_buffer_idx().unwrap_or(0);
-                    let next_idx = (cur_idx + 1) % self.buffers.len();
-                    let next_id = self.buffers[next_idx].id;
-                    self.pane_layout.active_pane_mut().switch_buffer(next_id);
-                }
+                self.switch_buffer_by_offset(1);
             }
             Some("bp") | Some("bprev") => {
-                if !self.buffers.is_empty() {
-                    let cur_idx = self.active_buffer_idx().unwrap_or(0);
-                    let prev_idx = if cur_idx == 0 {
-                        self.buffers.len() - 1
-                    } else {
-                        cur_idx - 1
-                    };
-                    let prev_id = self.buffers[prev_idx].id;
-                    self.pane_layout.active_pane_mut().switch_buffer(prev_id);
-                }
+                self.switch_buffer_by_offset(-1);
             }
             Some("bd") => {
                 self.close_current_buffer(false);
@@ -1829,7 +1797,23 @@ impl Editor {
         }
     }
 
-    /// Full re-highlight for the active buffer (used after undo/redo/paste).
+    fn switch_buffer_by_offset(&mut self, offset: isize) {
+        if self.buffers.is_empty() {
+            return;
+        }
+        self.push_jump();
+        let cur = self.active_buffer_idx().unwrap_or(0) as isize;
+        let len = self.buffers.len() as isize;
+        let next = ((cur + offset) % len + len) % len;
+        let next_id = self.buffers[next as usize].id;
+        self.pane_layout.active_pane_mut().switch_buffer(next_id);
+    }
+
+    fn exit_visual_mode(&mut self) {
+        self.input.mode = Mode::Normal;
+        self.visual_anchor = None;
+    }
+
     fn rehighlight_active(&mut self) {
         if let Some(buf) = self.active_buffer() {
             let buf_id = buf.id;
@@ -2002,8 +1986,7 @@ impl Editor {
         let (start, end) = match range {
             Some(r) if r.0 < r.1 => r,
             _ => {
-                self.input.mode = Mode::Normal;
-                self.visual_anchor = None;
+                self.exit_visual_mode();
                 return;
             }
         };
@@ -2026,8 +2009,7 @@ impl Editor {
                 self.status_message = format!("{} chars yanked", end - start);
             }
         }
-        self.input.mode = Mode::Normal;
-        self.visual_anchor = None;
+        self.exit_visual_mode();
     }
 
     /// Surround the visual selection with a character pair.
@@ -2038,8 +2020,7 @@ impl Editor {
         let (start, end) = match range {
             Some(r) if r.0 < r.1 => r,
             _ => {
-                self.input.mode = Mode::Normal;
-                self.visual_anchor = None;
+                self.exit_visual_mode();
                 return;
             }
         };
@@ -2060,12 +2041,10 @@ impl Editor {
             let open_str = open.to_string();
             b.rope.insert(end, &close_str);
             b.rope.insert(start, &open_str);
-            b.invalidate_hash();
-            b.modified = true;
+            b.mark_modified();
         });
         self.rehighlight_active();
-        self.input.mode = Mode::Normal;
-        self.visual_anchor = None;
+        self.exit_visual_mode();
     }
 
     // -- Substitute --
