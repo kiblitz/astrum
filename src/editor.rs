@@ -85,6 +85,8 @@ pub struct FindFileState {
     pub filtered: Vec<usize>,
     /// Selected index within filtered results.
     pub selected: usize,
+    /// Remembered cursor positions for visited directories.
+    dir_cursor_cache: HashMap<PathBuf, usize>,
 }
 
 impl FindFileState {
@@ -97,7 +99,7 @@ impl FindFileState {
         }];
         entries.extend(crate::file_browser::scan_directory(&dir));
         let filtered: Vec<usize> = (0..entries.len()).collect();
-        Self { dir, input: String::new(), entries, filtered, selected: 0 }
+        Self { dir, input: String::new(), entries, filtered, selected: 0, dir_cursor_cache: HashMap::new() }
     }
 
     fn refilter(&mut self) {
@@ -125,7 +127,10 @@ impl FindFileState {
     }
 
     /// Navigate into a subdirectory, rescan, and clear input.
+    /// Remembers cursor position for the current directory and restores it if revisited.
     fn enter_dir(&mut self, path: &std::path::Path) {
+        // Save cursor for the directory we're leaving.
+        self.dir_cursor_cache.insert(self.dir.clone(), self.selected);
         self.dir = path.to_path_buf();
         let mut entries = vec![crate::file_browser::DirEntry {
             name: ".".to_string(),
@@ -137,7 +142,9 @@ impl FindFileState {
         self.input.clear();
         self.entries = entries;
         self.filtered = (0..self.entries.len()).collect();
-        self.selected = 0;
+        // Restore cursor if we've been here before, clamped to entry count.
+        let cached = self.dir_cursor_cache.get(&self.dir).copied().unwrap_or(0);
+        self.selected = cached.min(self.filtered.len().saturating_sub(1));
     }
 
     /// Display path shown in the input line.
