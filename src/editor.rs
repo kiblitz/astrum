@@ -844,6 +844,9 @@ impl Editor {
             Action::DeleteCharBackward => {
                 self.with_buffer_edit(|b| b.delete_char_backward());
             }
+            Action::DeleteWordBackward => {
+                self.with_buffer_edit(|b| b.delete_word_backward());
+            }
             Action::DeleteCharForward => {
                 for _ in 0..count {
                     self.with_buffer_edit(|b| b.delete_char_forward());

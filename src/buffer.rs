@@ -258,6 +258,44 @@ impl Buffer {
         })
     }
 
+    pub fn delete_word_backward(&mut self) -> Option<EditInfo> {
+        if self.cursor.col == 0 && self.cursor.line == 0 {
+            return None;
+        }
+        let end_idx = self.cursor_char_idx();
+        if end_idx == 0 {
+            return None;
+        }
+
+        // Save undo before moving so that undo restores the original cursor.
+        self.save_undo();
+
+        self.move_word_backward();
+        let start_idx = self.cursor_char_idx();
+
+        if start_idx == end_idx {
+            // Nothing to delete — pop the undo we just saved.
+            self.undo_stack.pop();
+            return None;
+        }
+        let start_byte = self.rope.char_to_byte(start_idx);
+        let old_end_byte = self.rope.char_to_byte(end_idx);
+        let start_pos = self.position_at_char(start_idx);
+        let old_end_pos = self.position_at_char(end_idx);
+        self.rope.remove(start_idx..end_idx);
+        // Cursor is already at the right position from move_word_backward.
+        self.modified = true;
+        self.invalidate_hash();
+        Some(EditInfo {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_position: start_pos,
+            old_end_position: old_end_pos,
+            new_end_position: start_pos,
+        })
+    }
+
     pub fn delete_char_forward(&mut self) -> Option<EditInfo> {
         let idx = self.cursor_char_idx();
         if idx >= self.rope.len_chars() {

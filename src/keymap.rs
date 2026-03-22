@@ -25,7 +25,7 @@ impl KeyInput {
             },
             code => KeyInput {
                 code,
-                ctrl: false,
+                ctrl,
                 alt,
             },
         }

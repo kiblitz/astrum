@@ -223,6 +223,8 @@ fn default_keymap() -> Keymap {
         ("C-s", Action::SaveBuffer),
         ("enter", Action::InsertNewline),
         ("backspace", Action::DeleteCharBackward),
+        ("C-backspace", Action::DeleteWordBackward),
+        ("C-w", Action::DeleteWordBackward),
         ("delete", Action::DeleteCharForward),
         ("left", Action::MoveLeft),
         ("right", Action::MoveRight),

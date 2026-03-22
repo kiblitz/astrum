@@ -306,3 +306,49 @@ fn big_word_backward() {
     b.move_big_word_backward();
     check(&state(&b), expect![[r#"cursor=(0,0) text="foo.bar baz""#]]);
 }
+
+// -- delete word backward --
+
+#[test]
+fn delete_word_backward_simple() {
+    let mut b = buf("hello world", 0, 11);
+    b.delete_word_backward();
+    check(&state(&b), expect![[r#"cursor=(0,6) text="hello ""#]]);
+}
+
+#[test]
+fn delete_word_backward_mid_word() {
+    let mut b = buf("hello world", 0, 8);
+    b.delete_word_backward();
+    check(&state(&b), expect![[r#"cursor=(0,6) text="hello rld""#]]);
+}
+
+#[test]
+fn delete_word_backward_at_start() {
+    let mut b = buf("hello world", 0, 0);
+    b.delete_word_backward();
+    check(&state(&b), expect![[r#"cursor=(0,0) text="hello world""#]]);
+}
+
+#[test]
+fn delete_word_backward_across_line() {
+    let mut b = buf("hello\nworld", 1, 0);
+    b.delete_word_backward();
+    check(&state(&b), expect![[r#"cursor=(0,0) text="world""#]]);
+}
+
+#[test]
+fn delete_word_backward_punctuation() {
+    let mut b = buf("foo.bar", 0, 7);
+    b.delete_word_backward();
+    check(&state(&b), expect![[r#"cursor=(0,4) text="foo.""#]]);
+}
+
+#[test]
+fn delete_word_backward_undo_restores_cursor() {
+    let mut b = buf("hello world", 0, 11);
+    b.delete_word_backward();
+    check(&state(&b), expect![[r#"cursor=(0,6) text="hello ""#]]);
+    b.undo();
+    check(&state(&b), expect![[r#"cursor=(0,11) text="hello world""#]]);
+}
