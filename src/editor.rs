@@ -237,6 +237,31 @@ pub struct Editor {
 /// Apply a single motion to a buffer. This is the single source of truth for
 /// mapping motion actions to buffer methods — used by both normal movement
 /// (with repeat/early-break) and operator+motion composition.
+/// Find all (possibly overlapping) substring matches in a rope.
+/// Returns Vec<(line_idx, col_start, col_end)> where cols are char indices.
+pub fn find_all_matches_in_rope(rope: &ropey::Rope, pattern: &str) -> Vec<(usize, usize, usize)> {
+    let mut matches = Vec::new();
+    for line_idx in 0..rope.len_lines() {
+        let line = rope.line(line_idx);
+        let line_str: String = line.chars().collect();
+        let mut search_start = 0;
+        while search_start < line_str.len() {
+            if let Some(byte_pos) = line_str[search_start..].find(pattern) {
+                let abs_byte = search_start + byte_pos;
+                let col_start = line_str[..abs_byte].chars().count();
+                let col_end = col_start + pattern.chars().count();
+                matches.push((line_idx, col_start, col_end));
+                // Advance by one character to find overlapping matches.
+                let next_char_len = line_str[abs_byte..].chars().next().map_or(1, |c| c.len_utf8());
+                search_start = abs_byte + next_char_len;
+            } else {
+                break;
+            }
+        }
+    }
+    matches
+}
+
 fn apply_motion(b: &mut Buffer, action: &Action, viewport_height: usize) {
     match action {
         Action::MoveUp => b.move_up(),
@@ -2115,27 +2140,7 @@ impl Editor {
             Some(b) => b,
             None => return Vec::new(),
         };
-        let mut matches = Vec::new();
-        for line_idx in 0..buf.rope.len_lines() {
-            let line = buf.rope.line(line_idx);
-            let line_str: String = line.chars().collect();
-            // Find all substring matches using char indices.
-            let mut search_start = 0;
-            while search_start < line_str.len() {
-                if let Some(byte_pos) = line_str[search_start..].find(pattern) {
-                    let abs_byte = search_start + byte_pos;
-                    // Convert byte offset to char offset.
-                    let col_start = line_str[..abs_byte].chars().count();
-                    let col_end = col_start + pattern.chars().count();
-                    matches.push((line_idx, col_start, col_end));
-                    // Advance past this match to find overlapping or next matches.
-                    search_start = abs_byte + pattern.len().max(1);
-                } else {
-                    break;
-                }
-            }
-        }
-        matches
+        find_all_matches_in_rope(&buf.rope, pattern)
     }
 
     /// Execute a search: store pattern, find matches, jump to first match.

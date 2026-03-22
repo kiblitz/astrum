@@ -1091,8 +1091,12 @@ fn overlay_search_highlights<'a>(
                 continue;
             }
 
-            let local_start = hl_start - span_start;
+            let local_start = (hl_start - span_start).max(pos);
             let local_end = hl_end - span_start;
+
+            if local_start >= local_end {
+                continue;
+            }
 
             // Emit pre-match text with original style.
             if pos < local_start {
