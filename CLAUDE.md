@@ -75,6 +75,46 @@ Swap files persist unsaved edits to disk for crash recovery. External change det
 - `:w!` — force save even if external changes detected
 - `:recover` — restore buffer content from swap file
 
+### Search (`/`, `?`, `n`, `N`)
+Per-buffer incremental search with live highlighting.
+
+- **SearchState** in editor.rs owns `last_pattern`, `last_direction`, and `buffer_matches: HashMap<usize, BufferSearchMatches>`
+- Each `BufferSearchMatches` stores `matches: Vec<(usize, usize, usize)>` (line, start_col, end_col) and `current_match: Option<usize>`
+- Matches are **per-buffer**, not per-pane — switching panes preserves highlights for each file
+- **Live search**: while in Search mode, matches are recomputed on every keystroke for the active buffer
+- Renderer applies yellow background to all matches, orange to the current match (via `overlay_search_highlights`)
+- Empty pattern on Enter repeats last search (`SearchNext`)
+- `Mode::Search` in input.rs handles search buffer input; Esc cancels, Enter executes
+
+### Operator-pending state (`d`, `c`, `y`)
+Vim-style operator + motion composition.
+
+- `d`, `c`, `y` are **leaf bindings** in the keymap (not trie branches). They enter operator-pending state.
+- `pending_operator: Option<(Action, usize)>` in editor.rs stores `(operator_action, count)`
+- When a motion arrives while operator is pending, `execute_operator_motion()` computes the range:
+  - Saves cursor, applies motion `count` times, reads new cursor, restores cursor
+  - **Linewise motions** (`is_linewise_motion()`) expand to full line ranges
+  - **Characterwise motions** use `char_idx_at()` for rope char index conversion
+- Same operator repeated = linewise (dd, cc, yy) via `execute_linewise_operator()`
+- Counts multiply: `2d3w` = delete 6 words (op_count * motion_count)
+- Buffer methods: `delete_char_range(start, end)`, `text_in_char_range(start, end)`, `char_idx_at(line, col)`
+
+### Count prefix
+- Digits accumulate in `input.count_prefix` in input.rs (normal mode only, `0` only counts if prefix already started)
+- **Critical**: `execute_action` returns early for `Action::Noop` to avoid consuming the count before the actual command arrives (digits produce Noop while accumulating)
+- `input.count_prefix` is consumed at the top of `execute_action` via `.take()`, not in input.rs
+- All movement actions loop `count` times
+
+### Jump history
+Per-pane jump history with back/forward stacks.
+
+- `jump_history: HashMap<usize, (Vec<JumpPosition>, Vec<JumpPosition>)>` — keyed by pane ID
+- `JumpPosition` is either `Buffer { buffer_id, line, col }` or `Browser { dir, selected, scroll_offset }`
+- History is **copied** when splitting a pane (user decision)
+- History is removed when a pane is closed
+- `push_jump()` records current position before navigation events (opening files, switching buffers, opening browser)
+- `jump_back`/`jump_forward` only push current position to opposite stack if destination exists (prevents stack growth at end)
+
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.
-- Modes: Normal, Insert, Visual, Command (`:` prefix).
+- Modes: Normal, Insert, Visual, Command, Search (`:` prefix for command, `/`/`?` for search).

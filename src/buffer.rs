@@ -310,6 +310,54 @@ impl Buffer {
         })
     }
 
+    /// Delete a range of characters by char index. Cursor is placed at `start`.
+    pub fn delete_char_range(&mut self, start: usize, end: usize) -> Option<EditInfo> {
+        if start >= end || start >= self.rope.len_chars() {
+            return None;
+        }
+        let end = end.min(self.rope.len_chars());
+        self.save_undo();
+        let start_byte = self.rope.char_to_byte(start);
+        let old_end_byte = self.rope.char_to_byte(end);
+        let start_pos = self.position_at_char(start);
+        let old_end_pos = self.position_at_char(end);
+        self.rope.remove(start..end);
+        // Place cursor at the start of the deleted range.
+        self.cursor.line = self.rope.char_to_line(start.min(self.rope.len_chars().saturating_sub(1).max(0)));
+        let line_start = self.rope.line_to_char(self.cursor.line);
+        self.cursor.col = start.saturating_sub(line_start);
+        self.clamp_cursor();
+        self.modified = true;
+        self.invalidate_hash();
+        Some(EditInfo {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_position: start_pos,
+            old_end_position: old_end_pos,
+            new_end_position: start_pos,
+        })
+    }
+
+    /// Extract text in a char range (for yanking).
+    pub fn text_in_char_range(&self, start: usize, end: usize) -> String {
+        let end = end.min(self.rope.len_chars());
+        if start >= end {
+            return String::new();
+        }
+        self.rope.slice(start..end).to_string()
+    }
+
+    /// Get char index from a (line, col) cursor position.
+    pub fn char_idx_at(&self, line: usize, col: usize) -> usize {
+        if line >= self.rope.len_lines() {
+            return self.rope.len_chars();
+        }
+        let line_start = self.rope.line_to_char(line);
+        let line_len = line_len_no_newline(&self.rope.line(line));
+        line_start + col.min(line_len)
+    }
+
     pub fn move_up(&mut self) {
         if self.cursor.line > 0 {
             self.cursor.line -= 1;

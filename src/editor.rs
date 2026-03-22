@@ -215,6 +215,8 @@ pub struct Editor {
     find_file: Option<FindFileState>,
     swap_manager: SwapManager,
     search: SearchState,
+    /// Pending operator awaiting a motion: (operator_action, count).
+    pending_operator: Option<(Action, usize)>,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
 }
@@ -252,6 +254,7 @@ impl Editor {
             find_file: None,
             swap_manager,
             search: SearchState::new(),
+            pending_operator: None,
             quit_pending: false,
         })
     }
@@ -618,9 +621,15 @@ impl Editor {
     }
 
     async fn execute_action(&mut self, action: Action) -> Result<()> {
+        // Don't consume count for Noop — digits accumulate across Noop actions.
+        if action == Action::Noop {
+            return Ok(());
+        }
+
+        // Consume count prefix from the input handler.
+        let count = self.input.count_prefix.take().unwrap_or(1);
+
         // Clear quit_pending on any action that isn't part of the :q flow.
-        // EnterCommandMode (`:`), ExecuteCommand (the enter after `:q`),
-        // and the quit actions themselves must NOT clear it.
         if !matches!(
             action,
             Action::Noop
@@ -633,16 +642,47 @@ impl Editor {
         ) {
             self.quit_pending = false;
         }
+
+        // Operator-pending handling: compose operator + motion.
+        if let Some((op, op_count)) = self.pending_operator.take() {
+            // Same operator repeated = linewise (dd, cc, yy).
+            if action == op {
+                let total = op_count * count;
+                self.execute_linewise_operator(&op, total);
+                return Ok(());
+            }
+            // Motion = compose operator with motion.
+            if action.is_motion() {
+                let total = op_count * count;
+                self.execute_operator_motion(&op, &action, total);
+                return Ok(());
+            }
+            // Not a motion — cancel operator, fall through to execute action normally.
+            self.input.clear_pending();
+        }
+
+        // Operator actions: enter pending state.
+        if matches!(action, Action::OperatorDelete | Action::OperatorChange | Action::OperatorYank) {
+            self.pending_operator = Some((action, count));
+            self.input.pending_display = match &self.pending_operator.as_ref().unwrap().0 {
+                Action::OperatorDelete => "d".to_string(),
+                Action::OperatorChange => "c".to_string(),
+                Action::OperatorYank => "y".to_string(),
+                _ => unreachable!(),
+            };
+            return Ok(());
+        }
+
         let viewport_height = self.active_viewport_height();
 
         match action {
-            // Movement
-            Action::MoveUp => self.with_buffer(|b| b.move_up()),
-            Action::MoveDown => self.with_buffer(|b| b.move_down()),
-            Action::MoveLeft => self.with_buffer(|b| b.move_left()),
-            Action::MoveRight => self.with_buffer(|b| b.move_right()),
-            Action::MoveWordForward => self.with_buffer(|b| b.move_word_forward()),
-            Action::MoveWordBackward => self.with_buffer(|b| b.move_word_backward()),
+            // Movement (with count)
+            Action::MoveUp => self.with_buffer(|b| { for _ in 0..count { b.move_up(); } }),
+            Action::MoveDown => self.with_buffer(|b| { for _ in 0..count { b.move_down(); } }),
+            Action::MoveLeft => self.with_buffer(|b| { for _ in 0..count { b.move_left(); } }),
+            Action::MoveRight => self.with_buffer(|b| { for _ in 0..count { b.move_right(); } }),
+            Action::MoveWordForward => self.with_buffer(|b| { for _ in 0..count { b.move_word_forward(); } }),
+            Action::MoveWordBackward => self.with_buffer(|b| { for _ in 0..count { b.move_word_backward(); } }),
             Action::MoveToLineStart => self.with_buffer(|b| b.move_to_line_start()),
             Action::MoveToLineEnd => self.with_buffer(|b| b.move_to_line_end()),
             Action::MoveToFirstLine => {
@@ -652,19 +692,19 @@ impl Editor {
                 self.with_buffer(|b| b.move_to_last_line());
             }
             Action::PageUp => {
-                self.with_buffer(|b| b.page_up(viewport_height));
+                self.with_buffer(|b| { for _ in 0..count { b.page_up(viewport_height); } });
             }
             Action::PageDown => {
-                self.with_buffer(|b| b.page_down(viewport_height));
+                self.with_buffer(|b| { for _ in 0..count { b.page_down(viewport_height); } });
             }
             Action::HalfPageUp => {
-                self.with_buffer(|b| b.half_page_up(viewport_height));
+                self.with_buffer(|b| { for _ in 0..count { b.half_page_up(viewport_height); } });
             }
             Action::HalfPageDown => {
-                self.with_buffer(|b| b.half_page_down(viewport_height));
+                self.with_buffer(|b| { for _ in 0..count { b.half_page_down(viewport_height); } });
             }
-            Action::ScrollUp => self.with_buffer(|b| b.scroll_up(viewport_height)),
-            Action::ScrollDown => self.with_buffer(|b| b.scroll_down(viewport_height)),
+            Action::ScrollUp => self.with_buffer(|b| { for _ in 0..count { b.scroll_up(viewport_height); } }),
+            Action::ScrollDown => self.with_buffer(|b| { for _ in 0..count { b.scroll_down(viewport_height); } }),
             Action::GotoLine(line) => {
                 self.with_buffer(|b| b.goto_line(line));
             }
@@ -680,10 +720,14 @@ impl Editor {
                 self.with_buffer_edit(|b| b.delete_char_backward());
             }
             Action::DeleteCharForward => {
-                self.with_buffer_edit(|b| b.delete_char_forward());
+                for _ in 0..count {
+                    self.with_buffer_edit(|b| b.delete_char_forward());
+                }
             }
             Action::DeleteLine => {
-                self.with_buffer_edit(|b| b.delete_line());
+                for _ in 0..count {
+                    self.with_buffer_edit(|b| b.delete_line());
+                }
             }
 
             // Undo/redo — full re-parse (tree state is invalidated)
@@ -960,6 +1004,9 @@ impl Editor {
             | Action::BrowserNewFile
             | Action::BrowserClose
             | Action::BrowserHome => {}
+
+            // Operators are handled above (pending state).
+            Action::OperatorDelete | Action::OperatorChange | Action::OperatorYank => {}
 
             Action::Noop => {}
         }
@@ -1746,6 +1793,187 @@ impl Editor {
                 fb.scroll_offset = scroll_offset;
                 self.file_browsers.insert(pane_id, fb);
             }
+        }
+    }
+
+    // -- Operators --
+
+    /// Execute a linewise operator (dd, cc, yy) with count.
+    fn execute_linewise_operator(&mut self, op: &Action, count: usize) {
+        self.input.clear_pending();
+        match op {
+            Action::OperatorDelete => {
+                // Yank the lines first, then delete.
+                let yanked = self.sync_buffer(|b| {
+                    let start_line = b.cursor.line;
+                    let end_line = (start_line + count).min(b.line_count());
+                    let start_char = b.rope.line_to_char(start_line);
+                    let end_char = if end_line < b.rope.len_lines() {
+                        b.rope.line_to_char(end_line)
+                    } else {
+                        b.rope.len_chars()
+                    };
+                    b.text_in_char_range(start_char, end_char)
+                });
+                if let Some(text) = yanked {
+                    if let Some(cb) = &mut self.clipboard {
+                        let _ = cb.set_text(text);
+                    }
+                }
+                for _ in 0..count {
+                    self.with_buffer_edit(|b| b.delete_line());
+                }
+            }
+            Action::OperatorChange => {
+                // Delete lines and enter insert mode.
+                for _ in 0..count {
+                    self.with_buffer_edit(|b| b.delete_line());
+                }
+                // Insert a new line and enter insert mode.
+                self.with_buffer_edit(|b| b.insert_line_above());
+                self.input.mode = Mode::Insert;
+            }
+            Action::OperatorYank => {
+                let yanked = self.sync_buffer(|b| {
+                    let start_line = b.cursor.line;
+                    let end_line = (start_line + count).min(b.line_count());
+                    let start_char = b.rope.line_to_char(start_line);
+                    let end_char = if end_line < b.rope.len_lines() {
+                        b.rope.line_to_char(end_line)
+                    } else {
+                        b.rope.len_chars()
+                    };
+                    b.text_in_char_range(start_char, end_char)
+                });
+                if let Some(text) = yanked {
+                    if let Some(cb) = &mut self.clipboard {
+                        let _ = cb.set_text(text);
+                    }
+                    self.status_message = format!("{} lines yanked", count);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Execute an operator composed with a motion.
+    fn execute_operator_motion(&mut self, op: &Action, motion: &Action, count: usize) {
+        self.input.clear_pending();
+        let viewport_height = self.active_viewport_height();
+        let motion = motion.clone();
+        let linewise = motion.is_linewise_motion();
+
+        // Compute the range by saving cursor, applying motion, reading new cursor.
+        let range = self.sync_buffer(|b| {
+            let start_line = b.cursor.line;
+            let start_col = b.cursor.col;
+
+            // Apply motion `count` times.
+            for _ in 0..count {
+                match &motion {
+                    Action::MoveUp => b.move_up(),
+                    Action::MoveDown => b.move_down(),
+                    Action::MoveLeft => b.move_left(),
+                    Action::MoveRight => b.move_right(),
+                    Action::MoveWordForward => b.move_word_forward(),
+                    Action::MoveWordBackward => b.move_word_backward(),
+                    Action::MoveToLineStart => b.move_to_line_start(),
+                    Action::MoveToLineEnd => b.move_to_line_end(),
+                    Action::MoveToFirstLine => b.move_to_first_line(),
+                    Action::MoveToLastLine => b.move_to_last_line(),
+                    Action::PageUp => b.page_up(viewport_height),
+                    Action::PageDown => b.page_down(viewport_height),
+                    Action::HalfPageUp => b.half_page_up(viewport_height),
+                    Action::HalfPageDown => b.half_page_down(viewport_height),
+                    Action::GotoLine(line) => b.goto_line(*line),
+                    _ => {}
+                }
+            }
+
+            let end_line = b.cursor.line;
+            let end_col = b.cursor.col;
+
+            if linewise {
+                // Linewise: expand to full lines.
+                let first_line = start_line.min(end_line);
+                let last_line = start_line.max(end_line);
+                let start = b.rope.line_to_char(first_line);
+                let end = if last_line + 1 < b.rope.len_lines() {
+                    b.rope.line_to_char(last_line + 1)
+                } else {
+                    b.rope.len_chars()
+                };
+                // Restore cursor to start of range for deletion.
+                b.cursor.line = first_line;
+                b.cursor.col = 0;
+                (start, end)
+            } else {
+                // Characterwise: from start cursor to end cursor.
+                let start = b.char_idx_at(start_line, start_col);
+                let end = b.char_idx_at(end_line, end_col);
+                let (from, to) = if start <= end { (start, end) } else { (end, start) };
+                // For forward motions like w/$, include the character at end.
+                // But for MoveToLineEnd, the end position is past the last char already.
+                let to = if start <= end && !matches!(motion, Action::MoveToLineEnd) {
+                    to
+                } else {
+                    to
+                };
+                // Restore cursor to start of range.
+                if start <= end {
+                    b.cursor.line = start_line;
+                    b.cursor.col = start_col;
+                } else {
+                    b.cursor.line = end_line;
+                    b.cursor.col = end_col;
+                }
+                (from, to)
+            }
+        });
+
+        let (start, end) = match range {
+            Some(r) => r,
+            None => return,
+        };
+
+        if start >= end {
+            return;
+        }
+
+        match op {
+            Action::OperatorDelete => {
+                // Yank first, then delete.
+                let text = self.sync_buffer(|b| b.text_in_char_range(start, end));
+                if let Some(text) = text {
+                    if let Some(cb) = &mut self.clipboard {
+                        let _ = cb.set_text(text);
+                    }
+                }
+                self.with_buffer_edit(|b| b.delete_char_range(start, end));
+                self.rehighlight_active();
+            }
+            Action::OperatorChange => {
+                self.with_buffer_edit(|b| b.delete_char_range(start, end));
+                self.rehighlight_active();
+                self.input.mode = Mode::Insert;
+            }
+            Action::OperatorYank => {
+                let text = self.sync_buffer(|b| b.text_in_char_range(start, end));
+                if let Some(text) = text {
+                    let msg = if linewise {
+                        let line_count = text.lines().count();
+                        format!("{} lines yanked", line_count)
+                    } else {
+                        format!("{} chars yanked", text.len())
+                    };
+                    if let Some(cb) = &mut self.clipboard {
+                        let _ = cb.set_text(text);
+                    }
+                    self.status_message = msg;
+                }
+                // Restore cursor to original position (don't move on yank).
+            }
+            _ => {}
         }
     }
 

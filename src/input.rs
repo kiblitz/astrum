@@ -114,7 +114,7 @@ impl InputHandler {
             match lookup_in_map(&branch, &input) {
                 KeyLookup::Found(action) => {
                     self.pending_display.clear();
-                    self.count_prefix = None;
+                    // Don't clear count_prefix — editor.rs consumes it.
                     return action;
                 }
                 KeyLookup::Prefix(children) => {
@@ -156,7 +156,7 @@ impl InputHandler {
 
         match mode_keymap.lookup(&input) {
             KeyLookup::Found(action) => {
-                self.count_prefix = None;
+                // Don't clear count_prefix — editor.rs consumes it.
                 action
             }
             KeyLookup::Prefix(children) => {
@@ -222,8 +222,10 @@ impl InputHandler {
             if c.is_ascii_digit() && !input.ctrl && !input.alt {
                 if self.count_prefix.is_some() || c != '0' {
                     let digit = c.to_digit(10).unwrap() as usize;
-                    self.count_prefix =
-                        Some(self.count_prefix.unwrap_or(0) * 10 + digit);
+                    let current = self.count_prefix.unwrap_or(0);
+                    self.count_prefix = Some(
+                        current.saturating_mul(10).saturating_add(digit)
+                    );
                     return Action::Noop;
                 }
             }

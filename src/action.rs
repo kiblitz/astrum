@@ -54,6 +54,11 @@ pub enum Action {
     Paste,
     PasteBefore,
 
+    // -- Operators (await a motion) --
+    OperatorDelete,
+    OperatorChange,
+    OperatorYank,
+
     // -- Jump history --
     JumpBack,
     JumpForward,
@@ -154,6 +159,9 @@ impl Action {
             "YankLine" => Some(Action::YankLine),
             "Paste" => Some(Action::Paste),
             "PasteBefore" => Some(Action::PasteBefore),
+            "OperatorDelete" => Some(Action::OperatorDelete),
+            "OperatorChange" => Some(Action::OperatorChange),
+            "OperatorYank" => Some(Action::OperatorYank),
             "JumpBack" => Some(Action::JumpBack),
             "JumpForward" => Some(Action::JumpForward),
             "EnterSearchForward" => Some(Action::EnterSearchForward),
@@ -231,6 +239,9 @@ impl Action {
             Action::YankLine => "Yank line",
             Action::Paste => "Paste after",
             Action::PasteBefore => "Paste before",
+            Action::OperatorDelete => "Delete (operator)",
+            Action::OperatorChange => "Change (operator)",
+            Action::OperatorYank => "Yank (operator)",
             Action::JumpBack => "Jump back",
             Action::JumpForward => "Jump forward",
             Action::EnterSearchForward => "Search forward",
@@ -297,6 +308,7 @@ impl Action {
             Action::DeleteLine, Action::InsertLineBelow, Action::InsertLineAbove,
             Action::Undo, Action::Redo,
             Action::YankLine, Action::Paste, Action::PasteBefore,
+            Action::OperatorDelete, Action::OperatorChange, Action::OperatorYank,
             Action::JumpBack, Action::JumpForward,
             Action::EnterSearchForward, Action::EnterSearchBackward,
             Action::SearchNext, Action::SearchPrev,
@@ -317,5 +329,43 @@ impl Action {
             Action::CommandPalette,
             Action::Quit, Action::ForceQuit, Action::QuitAll, Action::ForceQuitAll,
         ]
+    }
+
+    /// Whether this action is a motion that can compose with an operator.
+    pub fn is_motion(&self) -> bool {
+        matches!(
+            self,
+            Action::MoveUp
+                | Action::MoveDown
+                | Action::MoveLeft
+                | Action::MoveRight
+                | Action::MoveWordForward
+                | Action::MoveWordBackward
+                | Action::MoveToLineStart
+                | Action::MoveToLineEnd
+                | Action::MoveToFirstLine
+                | Action::MoveToLastLine
+                | Action::PageUp
+                | Action::PageDown
+                | Action::HalfPageUp
+                | Action::HalfPageDown
+                | Action::GotoLine(_)
+        )
+    }
+
+    /// Whether this motion operates on whole lines (linewise).
+    pub fn is_linewise_motion(&self) -> bool {
+        matches!(
+            self,
+            Action::MoveUp
+                | Action::MoveDown
+                | Action::MoveToFirstLine
+                | Action::MoveToLastLine
+                | Action::PageUp
+                | Action::PageDown
+                | Action::HalfPageUp
+                | Action::HalfPageDown
+                | Action::GotoLine(_)
+        )
     }
 }
