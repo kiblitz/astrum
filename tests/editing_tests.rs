@@ -260,6 +260,30 @@ fn text_in_char_range_across_lines() {
     check(&b.text_in_char_range(3, 9), expect!["lo\nwor"]);
 }
 
+#[test]
+fn text_in_char_range_empty_range() {
+    let b = buf("hello", 0, 0);
+    check(&b.text_in_char_range(3, 3), expect![""]);
+}
+
+#[test]
+fn text_in_char_range_empty_line() {
+    let b = buf("hello\n\nworld", 0, 0);
+    // Empty line (line 1) is just "\n" — linewise range includes it.
+    let (start, end) = b.linewise_range(1, 1);
+    let text = b.text_in_char_range(start, end);
+    // Trim reveals no visible content.
+    check(&text.trim().is_empty().to_string(), expect!["true"]);
+}
+
+#[test]
+fn delete_char_range_empty_is_noop() {
+    let mut b = buf("hello", 0, 2);
+    let result = b.delete_char_range(2, 2);
+    assert!(result.is_none());
+    check(&state(&b), expect![[r#"(0,2) "hello""#]]);
+}
+
 // -- insert_line_below --
 
 #[test]

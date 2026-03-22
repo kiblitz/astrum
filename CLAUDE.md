@@ -23,6 +23,8 @@ UPDATE_EXPECT=1 cargo test   # auto-update expect test snapshots
 ## Testing
 Use **expect tests** (`expect-test` crate) for buffer operations, motions, and any logic that can be exercised without a terminal. Tests live in `tests/` as integration tests (e.g. `tests/buffer_tests.rs`). The crate exposes a library target (`src/lib.rs`) so integration tests can import `astrum::buffer::Buffer` etc. When adding or fixing buffer/motion/editing behavior, add or update expect tests to cover the change. This is the primary regression safety net.
 
+**Every bug fix or behavior change must include tests in the same commit.** Do not wait to be asked — tests are mandatory, not optional.
+
 ## Architecture
 - **editor.rs** — Main event loop, action dispatch, orchestration
 - **renderer.rs** — Ratatui TUI rendering (panes, overlays, status bar)

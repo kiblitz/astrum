@@ -2384,10 +2384,15 @@ impl Editor {
     // -- Operators --
 
     /// Yank a char range from the active buffer into the clipboard.
+    /// If the yanked text has no visible content (only newlines), clears
+    /// the clipboard instead.
     fn yank_range(&mut self, start: usize, end: usize) {
-        let text = self.sync_buffer(|b| b.text_in_char_range(start, end));
-        if let Some(text) = text {
-            if let Some(cb) = &mut self.clipboard {
+        let text = self.sync_buffer(|b| b.text_in_char_range(start, end))
+            .unwrap_or_default();
+        if let Some(cb) = &mut self.clipboard {
+            if text.trim().is_empty() {
+                let _ = cb.clear();
+            } else {
                 let _ = cb.set_text(text);
             }
         }
@@ -2504,6 +2509,9 @@ impl Editor {
         };
 
         if start >= end {
+            // Empty range: nothing to delete/change, but all operators
+            // clear the clipboard (delete/change yank before acting).
+            self.yank_range(start, end);
             return;
         }
 
