@@ -9,7 +9,7 @@
 
 ## Tier 2 — Power user essentials
 - [ ] Text objects (`iw`, `a{`, `i"`, etc.)
-- [ ] Search & replace (`:s/pattern/replacement/`)
+- [x] Search & replace (`:s/pattern/replacement/`)
 - [ ] Marks (`ma`, `'a`)
 - [ ] Named registers
 - [ ] Macros (`q`, `@`)

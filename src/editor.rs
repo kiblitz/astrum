@@ -234,6 +234,50 @@ pub struct Editor {
     quit_pending: bool,
 }
 
+/// Parsed `:s` or `:%s` substitute command.
+pub struct Substitute {
+    pub pattern: String,
+    pub replacement: String,
+    pub global: bool,      // /g flag: all occurrences per line
+    pub whole_file: bool,  // %s: all lines (vs current line only)
+}
+
+/// Parse a substitute command string like `s/foo/bar/g` or `%s/foo/bar/`.
+/// The delimiter is the character after `s` (usually `/`).
+pub fn parse_substitute(cmd: &str) -> Option<Substitute> {
+    let (whole_file, rest) = if let Some(r) = cmd.strip_prefix("%s") {
+        (true, r)
+    } else if let Some(r) = cmd.strip_prefix('s') {
+        (false, r)
+    } else {
+        return None;
+    };
+
+    // The first character of `rest` is the delimiter.
+    let mut chars = rest.chars();
+    let delim = chars.next()?;
+    if delim.is_alphanumeric() || delim == ' ' {
+        return None; // Not a substitute — could be `:set` or similar.
+    }
+    let rest: String = chars.collect();
+
+    // Split by delimiter into pattern, replacement, flags.
+    let parts: Vec<&str> = rest.splitn(3, delim).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let pattern = parts[0].to_string();
+    let replacement = parts[1].to_string();
+    let flags = if parts.len() > 2 { parts[2] } else { "" };
+    let global = flags.contains('g');
+
+    if pattern.is_empty() {
+        return None;
+    }
+
+    Some(Substitute { pattern, replacement, global, whole_file })
+}
+
 /// Apply a single motion to a buffer. This is the single source of truth for
 /// mapping motion actions to buffer methods — used by both normal movement
 /// (with repeat/early-break) and operator+motion composition.
@@ -1208,7 +1252,15 @@ impl Editor {
     }
 
     async fn execute_command(&mut self, cmd: &str) -> Result<()> {
-        let parts: Vec<&str> = cmd.trim().splitn(2, ' ').collect();
+        let cmd = cmd.trim();
+
+        // Substitute command: :s/pat/rep/[flags] or :%s/pat/rep/[flags]
+        if let Some(sub) = parse_substitute(cmd) {
+            self.execute_substitute(sub);
+            return Ok(());
+        }
+
+        let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
         // Clear quit_pending for any command that isn't a quit variant.
         let is_quit_cmd = matches!(parts.first().copied(), Some("q" | "q!" | "qa" | "qa!" | "wq"));
         if !is_quit_cmd {
@@ -1986,6 +2038,76 @@ impl Editor {
         self.rehighlight_active();
         self.input.mode = Mode::Normal;
         self.visual_anchor = None;
+    }
+
+    // -- Substitute --
+
+    fn execute_substitute(&mut self, sub: Substitute) {
+        let count = self.sync_buffer(|b| {
+            let line_range = if sub.whole_file {
+                0..b.rope.len_lines()
+            } else {
+                b.cursor.line..b.cursor.line + 1
+            };
+
+            b.save_undo();
+            let mut total_replacements = 0usize;
+
+            // Process lines in reverse so that edits on later lines don't
+            // shift the char offsets of earlier lines.
+            let lines: Vec<usize> = line_range.collect();
+            for &line_idx in lines.iter().rev() {
+                if line_idx >= b.rope.len_lines() {
+                    continue;
+                }
+                let line_str: String = b.rope.line(line_idx).chars().collect();
+
+                // Find match positions (byte offsets within the line string).
+                let mut positions = Vec::new();
+                let mut search_start = 0;
+                while search_start < line_str.len() {
+                    if let Some(byte_pos) = line_str[search_start..].find(&sub.pattern) {
+                        let abs = search_start + byte_pos;
+                        positions.push(abs);
+                        if !sub.global {
+                            break; // Only first match per line.
+                        }
+                        // Advance past the match to find non-overlapping occurrences.
+                        search_start = abs + sub.pattern.len();
+                    } else {
+                        break;
+                    }
+                }
+
+                // Apply replacements in reverse order within the line so offsets stay valid.
+                let line_char_start = b.rope.line_to_char(line_idx);
+                for &byte_pos in positions.iter().rev() {
+                    let col_start = line_str[..byte_pos].chars().count();
+                    let col_end = col_start + sub.pattern.chars().count();
+                    let char_start = line_char_start + col_start;
+                    let char_end = line_char_start + col_end;
+                    b.rope.remove(char_start..char_end);
+                    b.rope.insert(char_start, &sub.replacement);
+                    total_replacements += 1;
+                }
+            }
+
+            if total_replacements > 0 {
+                b.invalidate_hash();
+                b.modified = true;
+            }
+
+            total_replacements
+        });
+
+        self.rehighlight_active();
+
+        let total = count.unwrap_or(0);
+        if total == 0 {
+            self.status_message = format!("Pattern not found: {}", sub.pattern);
+        } else {
+            self.status_message = format!("{} substitution(s) made", total);
+        }
     }
 
     // -- Operators --

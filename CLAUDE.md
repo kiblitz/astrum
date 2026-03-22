@@ -91,6 +91,17 @@ Per-buffer incremental search with live highlighting.
 - Empty pattern on Enter repeats last search (`SearchNext`)
 - `Mode::Search` in input.rs handles search buffer input; Esc cancels, Enter executes
 
+### Search & replace (`:s`, `:%s`)
+Vim-style substitute command.
+
+- **Syntax**: `:s/pattern/replacement/[flags]` (current line) or `:%s/pattern/replacement/[flags]` (whole file)
+- **Flags**: `g` replaces all occurrences per line; without it, only the first match per line
+- **Delimiter**: first non-alphanumeric, non-space char after `s` (usually `/`, but any char works e.g. `s#pat#rep#`)
+- `parse_substitute()` in editor.rs parses the command string into a `Substitute` struct
+- `execute_substitute()` applies replacements in reverse order (lines then positions) to preserve offsets
+- Non-overlapping matches (unlike search highlighting which shows overlapping matches)
+- Single undo snapshot for the entire substitute operation
+
 ### Operator-pending state (`d`, `c`, `y`)
 Vim-style operator + motion composition.
 
