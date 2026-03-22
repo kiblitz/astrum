@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 
+enum VisualOp { Delete, Change, Yank }
+
 /// State for the command palette (SPC SPC).
 pub struct PaletteState {
     pub query: String,
@@ -224,8 +226,40 @@ pub struct Editor {
     search: SearchState,
     /// Pending operator awaiting a motion: (operator_action, count).
     pending_operator: Option<(Action, usize)>,
+    /// Visual mode anchor: (line, col) where selection started.
+    visual_anchor: Option<(usize, usize)>,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
+}
+
+/// Apply a single motion to a buffer. This is the single source of truth for
+/// mapping motion actions to buffer methods — used by both normal movement
+/// (with repeat/early-break) and operator+motion composition.
+fn apply_motion(b: &mut Buffer, action: &Action, viewport_height: usize) {
+    match action {
+        Action::MoveUp => b.move_up(),
+        Action::MoveDown => b.move_down(),
+        Action::MoveLeft => b.move_left(),
+        Action::MoveRight => b.move_right(),
+        Action::MoveWordForward => b.move_word_forward(),
+        Action::MoveWordEnd => b.move_word_end(),
+        Action::MoveWordBackward => b.move_word_backward(),
+        Action::MoveBigWordForward => b.move_big_word_forward(),
+        Action::MoveBigWordEnd => b.move_big_word_end(),
+        Action::MoveBigWordBackward => b.move_big_word_backward(),
+        Action::MoveToLineStart => b.move_to_line_start(),
+        Action::MoveToLineEnd => b.move_to_line_end(),
+        Action::MoveToFirstLine => b.move_to_first_line(),
+        Action::MoveToLastLine => b.move_to_last_line(),
+        Action::PageUp => b.page_up(viewport_height),
+        Action::PageDown => b.page_down(viewport_height),
+        Action::HalfPageUp => b.half_page_up(viewport_height),
+        Action::HalfPageDown => b.half_page_down(viewport_height),
+        Action::ScrollUp => b.scroll_up(viewport_height),
+        Action::ScrollDown => b.scroll_down(viewport_height),
+        Action::GotoLine(line) => b.goto_line(*line),
+        _ => {}
+    }
 }
 
 impl Editor {
@@ -262,6 +296,7 @@ impl Editor {
             swap_manager,
             search: SearchState::new(),
             pending_operator: None,
+            visual_anchor: None,
             quit_pending: false,
         })
     }
@@ -420,11 +455,12 @@ impl Editor {
                 let search_state = &self.search;
                 let search_buf = &self.input.search_buffer;
                 let search_dir = self.input.search_direction;
+                let visual_anchor = self.visual_anchor;
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
                         &pending_hints, hl_cache, file_browsers, palette, find_file,
-                        search_state, search_buf, search_dir,
+                        search_state, search_buf, search_dir, visual_anchor,
                     );
                 })?;
             }
@@ -682,36 +718,14 @@ impl Editor {
 
         let viewport_height = self.active_viewport_height();
 
-        match action {
-            // Movement (with count, stops when cursor doesn't move)
-            Action::MoveUp => self.repeat_motion(count, |b| b.move_up()),
-            Action::MoveDown => self.repeat_motion(count, |b| b.move_down()),
-            Action::MoveLeft => self.repeat_motion(count, |b| b.move_left()),
-            Action::MoveRight => self.repeat_motion(count, |b| b.move_right()),
-            Action::MoveWordForward => self.repeat_motion(count, |b| b.move_word_forward()),
-            Action::MoveWordEnd => self.repeat_motion(count, |b| b.move_word_end()),
-            Action::MoveWordBackward => self.repeat_motion(count, |b| b.move_word_backward()),
-            Action::MoveBigWordForward => self.repeat_motion(count, |b| b.move_big_word_forward()),
-            Action::MoveBigWordEnd => self.repeat_motion(count, |b| b.move_big_word_end()),
-            Action::MoveBigWordBackward => self.repeat_motion(count, |b| b.move_big_word_backward()),
-            Action::MoveToLineStart => self.with_buffer(|b| b.move_to_line_start()),
-            Action::MoveToLineEnd => self.with_buffer(|b| b.move_to_line_end()),
-            Action::MoveToFirstLine => {
-                self.with_buffer(|b| b.move_to_first_line());
-            }
-            Action::MoveToLastLine => {
-                self.with_buffer(|b| b.move_to_last_line());
-            }
-            Action::PageUp => self.repeat_motion(count, |b| b.page_up(viewport_height)),
-            Action::PageDown => self.repeat_motion(count, |b| b.page_down(viewport_height)),
-            Action::HalfPageUp => self.repeat_motion(count, |b| b.half_page_up(viewport_height)),
-            Action::HalfPageDown => self.repeat_motion(count, |b| b.half_page_down(viewport_height)),
-            Action::ScrollUp => self.repeat_motion(count, |b| b.scroll_up(viewport_height)),
-            Action::ScrollDown => self.repeat_motion(count, |b| b.scroll_down(viewport_height)),
-            Action::GotoLine(line) => {
-                self.with_buffer(|b| b.goto_line(line));
-            }
+        // Movement — all motions and scroll commands share apply_motion,
+        // repeated with early break when cursor stops moving.
+        if action.is_motion() || matches!(action, Action::ScrollUp | Action::ScrollDown) {
+            self.repeat_motion(count, &action, viewport_height);
+            return Ok(());
+        }
 
+        match action {
             // Editing — incremental tree-sitter parse
             Action::InsertChar(c) => {
                 self.with_buffer_edit(|b| b.insert_char(c));
@@ -745,17 +759,12 @@ impl Editor {
 
             // Clipboard
             Action::YankLine => {
-                if let Some(buf) = self.active_buffer() {
-                    let line_text = buf.current_line_text();
-                    if let Some(ref mut cb) = self.clipboard {
-                        if let Err(e) = cb.set_text(&line_text) {
-                            self.status_message = format!("Clipboard error: {}", e);
-                        } else {
-                            self.status_message = "Yanked 1 line".into();
-                        }
-                    } else {
-                        self.status_message = "Clipboard not available".into();
-                    }
+                let range = self.sync_buffer(|b| {
+                    b.linewise_range(b.cursor.line, b.cursor.line)
+                });
+                if let Some((start, end)) = range {
+                    self.yank_range(start, end);
+                    self.status_message = "Yanked 1 line".into();
                 }
             }
             Action::Paste => {
@@ -801,11 +810,16 @@ impl Editor {
                 self.input.mode = Mode::Insert;
             }
             Action::EnterInsertModeAppend => {
-                self.with_buffer(|b| b.move_right());
+                self.with_buffer(|b| {
+                    let line_len = b.current_line_len();
+                    b.cursor.col = (b.cursor.col + 1).min(line_len);
+                });
                 self.input.mode = Mode::Insert;
             }
             Action::EnterInsertModeLineEnd => {
-                self.with_buffer(|b| b.move_to_line_end());
+                self.with_buffer(|b| {
+                    b.cursor.col = b.current_line_len();
+                });
                 self.input.mode = Mode::Insert;
             }
             Action::EnterInsertModeLineStart => {
@@ -814,9 +828,25 @@ impl Editor {
             }
             Action::EnterNormalMode => {
                 self.input.mode = Mode::Normal;
+                self.visual_anchor = None;
+                // Clamp cursor back from insert-mode append position.
+                self.with_buffer(|b| {
+                    let max_col = b.current_line_len().saturating_sub(1);
+                    if b.cursor.col > max_col {
+                        b.cursor.col = max_col;
+                    }
+                });
             }
             Action::EnterVisualMode => {
-                self.input.mode = Mode::Visual;
+                if self.input.mode == Mode::Visual {
+                    // Toggle off: v again exits visual mode.
+                    self.input.mode = Mode::Normal;
+                    self.visual_anchor = None;
+                } else {
+                    let pane = self.pane_layout.active_pane();
+                    self.visual_anchor = Some((pane.cursor.line, pane.cursor.col));
+                    self.input.mode = Mode::Visual;
+                }
             }
             Action::EnterCommandMode => {
                 self.input.mode = Mode::Command;
@@ -1011,7 +1041,21 @@ impl Editor {
             // Operators are handled above (pending state).
             Action::OperatorDelete | Action::OperatorChange | Action::OperatorYank => {}
 
+            // Visual mode operations.
+            Action::VisualDelete => {
+                self.visual_operate(VisualOp::Delete);
+            }
+            Action::VisualYank => {
+                self.visual_operate(VisualOp::Yank);
+            }
+            Action::VisualChange => {
+                self.visual_operate(VisualOp::Change);
+            }
+
             Action::Noop => {}
+
+            // Motions and scroll are handled above the match (early return).
+            _ => {}
         }
 
         // Scroll to keep cursor visible (on the pane directly).
@@ -1612,14 +1656,11 @@ impl Editor {
     }
 
     /// Repeat a motion `count` times, stopping early if the cursor doesn't move.
-    fn repeat_motion<F>(&mut self, count: usize, mut f: F)
-    where
-        F: FnMut(&mut Buffer),
-    {
+    fn repeat_motion(&mut self, count: usize, action: &Action, viewport_height: usize) {
         self.sync_buffer(|b| {
             for _ in 0..count {
                 let prev = (b.cursor.line, b.cursor.col);
-                f(b);
+                apply_motion(b, action, viewport_height);
                 if (b.cursor.line, b.cursor.col) == prev {
                     break;
                 }
@@ -1815,59 +1856,96 @@ impl Editor {
         }
     }
 
+    // -- Visual mode --
+
+    /// Get the visual selection range as char indices (start, end) where start <= end.
+    /// The selection is inclusive of the anchor and cursor positions.
+    fn visual_char_range(&self) -> Option<(usize, usize)> {
+        let (anchor_line, anchor_col) = self.visual_anchor?;
+        let pane = self.pane_layout.active_pane();
+        let buf = self.active_buffer()?;
+        let anchor_idx = buf.char_idx_at(anchor_line, anchor_col);
+        let cursor_idx = buf.char_idx_at(pane.cursor.line, pane.cursor.col);
+        let start = anchor_idx.min(cursor_idx);
+        // +1 to make selection inclusive of the character under cursor.
+        let end = (anchor_idx.max(cursor_idx) + 1).min(buf.rope.len_chars());
+        Some((start, end))
+    }
+
+    fn visual_operate(&mut self, op: VisualOp) {
+        let range = self.visual_char_range();
+        let (start, end) = match range {
+            Some(r) if r.0 < r.1 => r,
+            _ => {
+                self.input.mode = Mode::Normal;
+                self.visual_anchor = None;
+                return;
+            }
+        };
+
+        match op {
+            VisualOp::Delete => {
+                self.yank_range(start, end);
+                self.with_buffer_edit(|b| b.delete_char_range(start, end));
+                self.rehighlight_active();
+            }
+            VisualOp::Change => {
+                self.with_buffer_edit(|b| b.delete_char_range(start, end));
+                self.rehighlight_active();
+                self.input.mode = Mode::Insert;
+                self.visual_anchor = None;
+                return;
+            }
+            VisualOp::Yank => {
+                self.yank_range(start, end);
+                self.status_message = format!("{} chars yanked", end - start);
+            }
+        }
+        self.input.mode = Mode::Normal;
+        self.visual_anchor = None;
+    }
+
     // -- Operators --
+
+    /// Yank a char range from the active buffer into the clipboard.
+    fn yank_range(&mut self, start: usize, end: usize) {
+        let text = self.sync_buffer(|b| b.text_in_char_range(start, end));
+        if let Some(text) = text {
+            if let Some(cb) = &mut self.clipboard {
+                let _ = cb.set_text(text);
+            }
+        }
+    }
 
     /// Execute a linewise operator (dd, cc, yy) with count.
     fn execute_linewise_operator(&mut self, op: &Action, count: usize) {
         self.input.clear_pending();
         match op {
             Action::OperatorDelete => {
-                // Yank the lines first, then delete.
-                let yanked = self.sync_buffer(|b| {
-                    let start_line = b.cursor.line;
-                    let end_line = (start_line + count).min(b.line_count());
-                    let start_char = b.rope.line_to_char(start_line);
-                    let end_char = if end_line < b.rope.len_lines() {
-                        b.rope.line_to_char(end_line)
-                    } else {
-                        b.rope.len_chars()
-                    };
-                    b.text_in_char_range(start_char, end_char)
+                let range = self.sync_buffer(|b| {
+                    let last = (b.cursor.line + count - 1).min(b.line_count().saturating_sub(1));
+                    b.linewise_range(b.cursor.line, last)
                 });
-                if let Some(text) = yanked {
-                    if let Some(cb) = &mut self.clipboard {
-                        let _ = cb.set_text(text);
-                    }
-                }
-                for _ in 0..count {
-                    self.with_buffer_edit(|b| b.delete_line());
+                if let Some((start, end)) = range {
+                    self.yank_range(start, end);
+                    self.with_buffer_edit(|b| b.delete_char_range(start, end));
+                    self.rehighlight_active();
                 }
             }
             Action::OperatorChange => {
-                // Delete lines and enter insert mode.
                 for _ in 0..count {
                     self.with_buffer_edit(|b| b.delete_line());
                 }
-                // Insert a new line and enter insert mode.
                 self.with_buffer_edit(|b| b.insert_line_above());
                 self.input.mode = Mode::Insert;
             }
             Action::OperatorYank => {
-                let yanked = self.sync_buffer(|b| {
-                    let start_line = b.cursor.line;
-                    let end_line = (start_line + count).min(b.line_count());
-                    let start_char = b.rope.line_to_char(start_line);
-                    let end_char = if end_line < b.rope.len_lines() {
-                        b.rope.line_to_char(end_line)
-                    } else {
-                        b.rope.len_chars()
-                    };
-                    b.text_in_char_range(start_char, end_char)
+                let range = self.sync_buffer(|b| {
+                    let last = (b.cursor.line + count - 1).min(b.line_count().saturating_sub(1));
+                    b.linewise_range(b.cursor.line, last)
                 });
-                if let Some(text) = yanked {
-                    if let Some(cb) = &mut self.clipboard {
-                        let _ = cb.set_text(text);
-                    }
+                if let Some((start, end)) = range {
+                    self.yank_range(start, end);
                     self.status_message = format!("{} lines yanked", count);
                 }
             }
@@ -1883,33 +1961,19 @@ impl Editor {
         let linewise = motion.is_linewise_motion();
 
         // Compute the range by saving cursor, applying motion, reading new cursor.
+        // Returns ((start, end), (orig_line, orig_col)).
         let range = self.sync_buffer(|b| {
+            let orig_line = b.cursor.line;
+            let orig_col = b.cursor.col;
             let start_line = b.cursor.line;
             let start_col = b.cursor.col;
 
-            // Apply motion `count` times.
+            // Apply motion `count` times, with early break when cursor stops moving.
             for _ in 0..count {
-                match &motion {
-                    Action::MoveUp => b.move_up(),
-                    Action::MoveDown => b.move_down(),
-                    Action::MoveLeft => b.move_left(),
-                    Action::MoveRight => b.move_right(),
-                    Action::MoveWordForward => b.move_word_forward(),
-                    Action::MoveWordEnd => b.move_word_end(),
-                    Action::MoveWordBackward => b.move_word_backward(),
-                    Action::MoveBigWordForward => b.move_big_word_forward(),
-                    Action::MoveBigWordEnd => b.move_big_word_end(),
-                    Action::MoveBigWordBackward => b.move_big_word_backward(),
-                    Action::MoveToLineStart => b.move_to_line_start(),
-                    Action::MoveToLineEnd => b.move_to_line_end(),
-                    Action::MoveToFirstLine => b.move_to_first_line(),
-                    Action::MoveToLastLine => b.move_to_last_line(),
-                    Action::PageUp => b.page_up(viewport_height),
-                    Action::PageDown => b.page_down(viewport_height),
-                    Action::HalfPageUp => b.half_page_up(viewport_height),
-                    Action::HalfPageDown => b.half_page_down(viewport_height),
-                    Action::GotoLine(line) => b.goto_line(*line),
-                    _ => {}
+                let prev = (b.cursor.line, b.cursor.col);
+                apply_motion(b, &motion, viewport_height);
+                if (b.cursor.line, b.cursor.col) == prev {
+                    break;
                 }
             }
 
@@ -1920,28 +1984,17 @@ impl Editor {
                 // Linewise: expand to full lines.
                 let first_line = start_line.min(end_line);
                 let last_line = start_line.max(end_line);
-                let start = b.rope.line_to_char(first_line);
-                let end = if last_line + 1 < b.rope.len_lines() {
-                    b.rope.line_to_char(last_line + 1)
-                } else {
-                    b.rope.len_chars()
-                };
+                let (start, end) = b.linewise_range(first_line, last_line);
                 // Restore cursor to start of range for deletion.
                 b.cursor.line = first_line;
                 b.cursor.col = 0;
-                (start, end)
+                ((start, end), (orig_line, orig_col))
             } else {
-                // Characterwise: from start cursor to end cursor.
+                // Characterwise: from start cursor to end cursor (inclusive).
                 let start = b.char_idx_at(start_line, start_col);
                 let end = b.char_idx_at(end_line, end_col);
-                let (from, to) = if start <= end { (start, end) } else { (end, start) };
-                // For forward motions like w/$, include the character at end.
-                // But for MoveToLineEnd, the end position is past the last char already.
-                let to = if start <= end && !matches!(motion, Action::MoveToLineEnd) {
-                    to
-                } else {
-                    to
-                };
+                let (from, to) = if start <= end { (start, end + 1) } else { (end, start + 1) };
+                let to = to.min(b.rope.len_chars());
                 // Restore cursor to start of range.
                 if start <= end {
                     b.cursor.line = start_line;
@@ -1950,11 +2003,11 @@ impl Editor {
                     b.cursor.line = end_line;
                     b.cursor.col = end_col;
                 }
-                (from, to)
+                ((from, to), (orig_line, orig_col))
             }
         });
 
-        let (start, end) = match range {
+        let ((start, end), (orig_line, orig_col)) = match range {
             Some(r) => r,
             None => return,
         };
@@ -1965,13 +2018,7 @@ impl Editor {
 
         match op {
             Action::OperatorDelete => {
-                // Yank first, then delete.
-                let text = self.sync_buffer(|b| b.text_in_char_range(start, end));
-                if let Some(text) = text {
-                    if let Some(cb) = &mut self.clipboard {
-                        let _ = cb.set_text(text);
-                    }
-                }
+                self.yank_range(start, end);
                 self.with_buffer_edit(|b| b.delete_char_range(start, end));
                 self.rehighlight_active();
             }
@@ -1981,20 +2028,18 @@ impl Editor {
                 self.input.mode = Mode::Insert;
             }
             Action::OperatorYank => {
-                let text = self.sync_buffer(|b| b.text_in_char_range(start, end));
-                if let Some(text) = text {
-                    let msg = if linewise {
-                        let line_count = text.lines().count();
-                        format!("{} lines yanked", line_count)
-                    } else {
-                        format!("{} chars yanked", text.len())
-                    };
-                    if let Some(cb) = &mut self.clipboard {
-                        let _ = cb.set_text(text);
-                    }
-                    self.status_message = msg;
-                }
-                // Restore cursor to original position (don't move on yank).
+                self.yank_range(start, end);
+                // Restore cursor to original position — yank doesn't move.
+                self.with_buffer(|b| {
+                    b.cursor.line = orig_line;
+                    b.cursor.col = orig_col;
+                });
+                let chars = end - start;
+                self.status_message = if linewise {
+                    format!("{} lines yanked", chars.max(1))
+                } else {
+                    format!("{} chars yanked", chars)
+                };
             }
             _ => {}
         }

@@ -2,8 +2,8 @@
 
 ## Tier 1 — Core editor fundamentals
 - [x] Search (`/`, `?`, `n`, `N`)
-- [ ] Visual mode operations (select + delete/yank/change)
-- [ ] Motion-based operators (`d5j`, `c$`, `yw`)
+- [x] Visual mode operations (select + delete/yank/change)
+- [x] Motion-based operators (`d5j`, `c$`, `yw`)
 - [ ] Text objects (`iw`, `a{`, `i"`, etc.)
 
 ## Tier 2 — Power user essentials

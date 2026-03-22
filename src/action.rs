@@ -63,6 +63,11 @@ pub enum Action {
     OperatorChange,
     OperatorYank,
 
+    // -- Visual mode operations --
+    VisualDelete,
+    VisualChange,
+    VisualYank,
+
     // -- Jump history --
     JumpBack,
     JumpForward,
@@ -170,6 +175,9 @@ impl Action {
             "OperatorDelete" => Some(Action::OperatorDelete),
             "OperatorChange" => Some(Action::OperatorChange),
             "OperatorYank" => Some(Action::OperatorYank),
+            "VisualDelete" => Some(Action::VisualDelete),
+            "VisualChange" => Some(Action::VisualChange),
+            "VisualYank" => Some(Action::VisualYank),
             "JumpBack" => Some(Action::JumpBack),
             "JumpForward" => Some(Action::JumpForward),
             "EnterSearchForward" => Some(Action::EnterSearchForward),
@@ -254,6 +262,9 @@ impl Action {
             Action::OperatorDelete => "Delete (operator)",
             Action::OperatorChange => "Change (operator)",
             Action::OperatorYank => "Yank (operator)",
+            Action::VisualDelete => "Delete selection",
+            Action::VisualChange => "Change selection",
+            Action::VisualYank => "Yank selection",
             Action::JumpBack => "Jump back",
             Action::JumpForward => "Jump forward",
             Action::EnterSearchForward => "Search forward",

@@ -36,6 +36,7 @@ impl Renderer {
         search_state: &SearchState,
         search_buffer: &str,
         search_direction: SearchDirection,
+        visual_anchor: Option<(usize, usize)>,
     ) {
         let size = frame.area();
         let has_overlay = find_file.is_some() || palette.is_some();
@@ -76,7 +77,7 @@ impl Renderer {
         let active_fb = file_browsers.get(&pane_layout.active_id);
         if !buffers.is_empty() || !pane_layout.is_single() {
             let show_cursor = !has_overlay;
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state);
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor);
             // Status line
             if let Some(fb) = active_fb {
                 self.render_file_browser_status(frame, chunks[2], fb);
@@ -158,6 +159,8 @@ impl Renderer {
         file_browsers: &HashMap<usize, FileBrowser>,
         show_cursor: bool,
         search_state: &SearchState,
+        mode: &Mode,
+        visual_anchor: Option<(usize, usize)>,
     ) {
         match node {
             LayoutNode::Leaf(pane_id) => {
@@ -192,7 +195,8 @@ impl Renderer {
                     if let Some(fb) = pane_fb {
                         self.render_file_browser(frame, content_area, fb);
                     } else if let Some(buf) = pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
-                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state));
+                        let pane_visual = if is_active && *mode == Mode::Visual { visual_anchor } else { None };
+                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state), pane_visual);
                     } else {
                         self.render_welcome(frame, content_area);
                     }
@@ -244,7 +248,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -278,7 +282,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor);
                             y_offset += h;
 
                             if i + 1 < children.len() {
@@ -614,6 +618,7 @@ impl Renderer {
         highlight_cache: &HighlightCache,
         show_cursor: bool,
         search_state: Option<&SearchState>,
+        visual_anchor: Option<(usize, usize)>,
     ) {
         let editor_height = area.height as usize;
         let line_num_width = buf.line_count().to_string().len().max(3);
@@ -700,6 +705,14 @@ impl Renderer {
 
             if !line_matches.is_empty() {
                 spans = overlay_search_highlights(spans, &line_matches);
+            }
+
+            // Overlay visual selection highlights on this line.
+            if let Some((anchor_line, anchor_col)) = visual_anchor {
+                let sel = visual_line_range(line_idx, anchor_line, anchor_col, cursor.line, cursor.col, buf);
+                if let Some((start_col, end_col)) = sel {
+                    spans = overlay_visual_highlights(spans, start_col, end_col);
+                }
             }
 
             editor_lines.push(Line::from(spans));
@@ -1088,6 +1101,88 @@ fn overlay_search_highlights<'a>(
         // Emit remaining text after last match.
         if pos < span_text.len() {
             let text: String = span_text[pos..].iter().collect();
+            result.push(Span::styled(text, base_style));
+        }
+
+        col = span_end;
+    }
+
+    result
+}
+
+/// Compute the column range to highlight on a given line for visual selection.
+/// Returns `Some((start_col, end_col))` (exclusive end) if this line is within the selection.
+fn visual_line_range(
+    line_idx: usize,
+    anchor_line: usize,
+    anchor_col: usize,
+    cursor_line: usize,
+    cursor_col: usize,
+    buf: &Buffer,
+) -> Option<(usize, usize)> {
+    // Normalize so start <= end
+    let (start_line, start_col, end_line, end_col) = if (anchor_line, anchor_col) <= (cursor_line, cursor_col) {
+        (anchor_line, anchor_col, cursor_line, cursor_col)
+    } else {
+        (cursor_line, cursor_col, anchor_line, anchor_col)
+    };
+
+    if line_idx < start_line || line_idx > end_line {
+        return None;
+    }
+
+    let line_len = buf.rope.line(line_idx).chars().filter(|c| *c != '\n' && *c != '\r').count();
+
+    let col_start = if line_idx == start_line { start_col } else { 0 };
+    let col_end = if line_idx == end_line { (end_col + 1).min(line_len) } else { line_len };
+
+    if col_start >= col_end {
+        return None;
+    }
+
+    Some((col_start, col_end))
+}
+
+/// Overlay visual selection highlighting on a line's spans.
+fn overlay_visual_highlights<'a>(spans: Vec<Span<'a>>, sel_start: usize, sel_end: usize) -> Vec<Span<'a>> {
+    let visual_style = Style::default().fg(Color::White).bg(Color::Rgb(68, 68, 120));
+
+    let mut result = Vec::new();
+    let mut col = 0usize;
+
+    for span in spans {
+        let span_chars: Vec<char> = span.content.chars().collect();
+        let span_start = col;
+        let span_end = col + span_chars.len();
+        let base_style = span.style;
+
+        // Clip selection to this span
+        let hl_start = sel_start.max(span_start);
+        let hl_end = sel_end.min(span_end);
+
+        if hl_start >= hl_end || hl_start >= span_end || hl_end <= span_start {
+            // No overlap — emit span as-is
+            result.push(span);
+            col = span_end;
+            continue;
+        }
+
+        let local_start = hl_start - span_start;
+        let local_end = hl_end - span_start;
+
+        // Pre-selection
+        if local_start > 0 {
+            let text: String = span_chars[..local_start].iter().collect();
+            result.push(Span::styled(text, base_style));
+        }
+
+        // Selected
+        let text: String = span_chars[local_start..local_end].iter().collect();
+        result.push(Span::styled(text, visual_style));
+
+        // Post-selection
+        if local_end < span_chars.len() {
+            let text: String = span_chars[local_end..].iter().collect();
             result.push(Span::styled(text, base_style));
         }
 

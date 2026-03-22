@@ -91,49 +91,41 @@ impl InputHandler {
         hints
     }
 
-    /// Handle a key event and return an action (or Noop).
-    pub fn handle_key(&mut self, key: KeyEvent) -> Action {
-        match self.mode {
-            Mode::Command => return self.handle_command_key(key),
-            Mode::Search => return self.handle_search_key(key),
-            _ => {}
-        }
+    /// Handle Esc, pending key chains, and count prefix — shared by all keymap modes.
+    /// Returns `Some(action)` if fully handled, `None` to continue to trie lookup.
+    fn handle_common(&mut self, key: &KeyEvent) -> Option<Action> {
+        let input = KeyInput::from_event(key);
 
-        let input = KeyInput::from_event(&key);
-
-        // Esc cancels any pending key chain.
+        // Esc cancels any pending key chain (and any accumulated count prefix).
         if input.code == KeyCode::Esc && self.pending_branch.is_some() {
-            self.pending_branch = None;
-            self.pending_display.clear();
+            self.clear_pending();
             self.count_prefix = None;
-            return Action::Noop;
+            return Some(Action::Noop);
         }
 
-        // If we're in the middle of a key chain, continue the trie walk.
+        // Continue pending chain.
         if let Some(branch) = self.pending_branch.take() {
             match lookup_in_map(&branch, &input) {
                 KeyLookup::Found(action) => {
                     self.pending_display.clear();
-                    // Don't clear count_prefix — editor.rs consumes it.
-                    return action;
+                    return Some(action);
                 }
                 KeyLookup::Prefix(children) => {
                     self.pending_display.push(' ');
                     self.pending_display.push_str(&input.display());
                     self.pending_branch = Some(children.clone());
-                    return Action::Noop;
+                    return Some(Action::Noop);
                 }
                 KeyLookup::Miss => {
-                    // Chain broken — reset.
-                    self.pending_display.clear();
-                    self.count_prefix = None;
-                    return Action::Noop;
+                    self.clear_pending();
+                    return Some(Action::Noop);
                 }
             }
         }
 
-        // Normal/Visual: handle count prefix (digits before a command).
-        if self.mode == Mode::Normal {
+        // Count prefix (digits before a command) — only in Normal, Visual, and Browser modes.
+        let supports_count = matches!(self.mode, Mode::Normal | Mode::Visual);
+        if supports_count {
             if let KeyCode::Char(c) = key.code {
                 if c.is_ascii_digit() && !input.ctrl && !input.alt {
                     if self.count_prefix.is_some() || c != '0' {
@@ -142,13 +134,50 @@ impl InputHandler {
                         self.count_prefix = Some(
                             current.saturating_mul(10).saturating_add(digit)
                         );
-                        return Action::Noop;
+                        return Some(Action::Noop);
                     }
                 }
             }
         }
 
-        // Look up in the mode's trie.
+        None
+    }
+
+    /// Look up a key in a trie and handle prefix/miss. Returns the resolved action.
+    fn lookup_keymap(
+        input: &KeyInput,
+        keymap: &crate::keymap::ModeKeymap,
+        pending_display: &mut String,
+        pending_branch: &mut Option<HashMap<KeyInput, KeyTrieNode>>,
+        count_prefix: &mut Option<usize>,
+    ) -> Action {
+        match keymap.lookup(input) {
+            KeyLookup::Found(action) => action,
+            KeyLookup::Prefix(children) => {
+                *pending_display = input.display();
+                *pending_branch = Some(children.clone());
+                Action::Noop
+            }
+            KeyLookup::Miss => {
+                *count_prefix = None;
+                Action::Noop
+            }
+        }
+    }
+
+    /// Handle a key event and return an action (or Noop).
+    pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        match self.mode {
+            Mode::Command => return self.handle_command_key(key),
+            Mode::Search => return self.handle_search_key(key),
+            _ => {}
+        }
+
+        if let Some(action) = self.handle_common(&key) {
+            return action;
+        }
+
+        let input = KeyInput::from_event(&key);
         let mode_keymap = match self.mode {
             Mode::Normal => &self.keymap.normal,
             Mode::Insert => &self.keymap.insert,
@@ -156,99 +185,32 @@ impl InputHandler {
             Mode::Command | Mode::Search => unreachable!(),
         };
 
-        match mode_keymap.lookup(&input) {
-            KeyLookup::Found(action) => {
-                // Don't clear count_prefix — editor.rs consumes it.
-                action
+        let action = Self::lookup_keymap(
+            &input, mode_keymap,
+            &mut self.pending_display, &mut self.pending_branch, &mut self.count_prefix,
+        );
+        if action == Action::Noop && self.mode == Mode::Insert {
+            match key.code {
+                KeyCode::Char(c) if !input.ctrl && !input.alt => Action::InsertChar(c),
+                KeyCode::Tab => Action::InsertChar('\t'),
+                _ => Action::Noop,
             }
-            KeyLookup::Prefix(children) => {
-                self.pending_display = input.display();
-                self.pending_branch = Some(children.clone());
-                Action::Noop
-            }
-            KeyLookup::Miss => {
-                self.count_prefix = None;
-                // Insert mode fallback: type the character.
-                if self.mode == Mode::Insert {
-                    match key.code {
-                        KeyCode::Char(c) if !input.ctrl && !input.alt => {
-                            Action::InsertChar(c)
-                        }
-                        KeyCode::Tab => Action::InsertChar('\t'),
-                        _ => Action::Noop,
-                    }
-                } else {
-                    Action::Noop
-                }
-            }
+        } else {
+            action
         }
     }
 
     /// Handle a key event using the browser keymap (for file browser navigate mode).
-    /// Shares pending chain state with normal handle_key.
     pub fn handle_key_for_browser(&mut self, key: KeyEvent) -> Action {
+        if let Some(action) = self.handle_common(&key) {
+            return action;
+        }
+
         let input = KeyInput::from_event(&key);
-
-        // Esc cancels any pending key chain.
-        if input.code == KeyCode::Esc && self.pending_branch.is_some() {
-            self.pending_branch = None;
-            self.pending_display.clear();
-            self.count_prefix = None;
-            return Action::Noop;
-        }
-
-        // Continue pending chain.
-        if let Some(branch) = self.pending_branch.take() {
-            match lookup_in_map(&branch, &input) {
-                KeyLookup::Found(action) => {
-                    self.pending_display.clear();
-                    self.count_prefix = None;
-                    return action;
-                }
-                KeyLookup::Prefix(children) => {
-                    self.pending_display.push(' ');
-                    self.pending_display.push_str(&input.display());
-                    self.pending_branch = Some(children.clone());
-                    return Action::Noop;
-                }
-                KeyLookup::Miss => {
-                    self.pending_display.clear();
-                    self.count_prefix = None;
-                    return Action::Noop;
-                }
-            }
-        }
-
-        // Count prefix.
-        if let KeyCode::Char(c) = key.code {
-            if c.is_ascii_digit() && !input.ctrl && !input.alt {
-                if self.count_prefix.is_some() || c != '0' {
-                    let digit = c.to_digit(10).unwrap() as usize;
-                    let current = self.count_prefix.unwrap_or(0);
-                    self.count_prefix = Some(
-                        current.saturating_mul(10).saturating_add(digit)
-                    );
-                    return Action::Noop;
-                }
-            }
-        }
-
-        // Look up in browser keymap.
-        match self.keymap.browser.lookup(&input) {
-            KeyLookup::Found(action) => {
-                self.count_prefix = None;
-                action
-            }
-            KeyLookup::Prefix(children) => {
-                self.pending_display = input.display();
-                self.pending_branch = Some(children.clone());
-                Action::Noop
-            }
-            KeyLookup::Miss => {
-                self.count_prefix = None;
-                Action::Noop
-            }
-        }
+        Self::lookup_keymap(
+            &input, &self.keymap.browser,
+            &mut self.pending_display, &mut self.pending_branch, &mut self.count_prefix,
+        )
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) -> Action {

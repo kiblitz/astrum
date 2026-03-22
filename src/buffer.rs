@@ -155,8 +155,27 @@ impl Buffer {
         }
     }
 
+    /// Line count excluding ropey's phantom empty last line.
+    /// Ropey counts "hello\n" as 2 lines; vim counts it as 1.
+    /// This makes all cursor/range logic match vim semantics.
     pub fn line_count(&self) -> usize {
-        self.rope.len_lines().max(1)
+        let n = self.rope.len_lines();
+        if n > 1 && self.rope.line(n - 1).len_chars() == 0 {
+            n - 1
+        } else {
+            n.max(1)
+        }
+    }
+
+    /// Compute the char index range for a span of lines (inclusive).
+    pub fn linewise_range(&self, first_line: usize, last_line: usize) -> (usize, usize) {
+        let start = self.rope.line_to_char(first_line);
+        let end = if last_line + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(last_line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        (start, end)
     }
 
     fn clamp_cursor(&mut self) {
@@ -164,9 +183,9 @@ impl Buffer {
         if self.cursor.line >= line_count {
             self.cursor.line = line_count.saturating_sub(1);
         }
-        let line_len = self.current_line_len();
-        if self.cursor.col > line_len {
-            self.cursor.col = line_len;
+        let max_col = self.current_line_len().saturating_sub(1);
+        if self.cursor.col > max_col {
+            self.cursor.col = max_col;
         }
     }
 
@@ -174,22 +193,7 @@ impl Buffer {
         if self.cursor.line >= self.rope.len_lines() {
             return 0;
         }
-        let line = self.rope.line(self.cursor.line);
-        let len = line.len_chars();
-        if len > 0 {
-            let last = line.char(len - 1);
-            if last == '\n' || last == '\r' {
-                if len >= 2 && line.char(len - 2) == '\r' {
-                    len - 2
-                } else {
-                    len - 1
-                }
-            } else {
-                len
-            }
-        } else {
-            0
-        }
+        line_len_no_newline(&self.rope.line(self.cursor.line))
     }
 
     pub fn insert_char(&mut self, ch: char) -> Option<EditInfo> {
@@ -283,12 +287,7 @@ impl Buffer {
             return None;
         }
         self.save_undo();
-        let line_start = self.rope.line_to_char(self.cursor.line);
-        let line_end = if self.cursor.line + 1 < self.rope.len_lines() {
-            self.rope.line_to_char(self.cursor.line + 1)
-        } else {
-            self.rope.len_chars()
-        };
+        let (line_start, line_end) = self.linewise_range(self.cursor.line, self.cursor.line);
         if line_start >= line_end {
             return None;
         }
@@ -382,12 +381,9 @@ impl Buffer {
     }
 
     pub fn move_right(&mut self) {
-        let line_len = self.current_line_len();
-        if self.cursor.col < line_len {
+        let max_col = self.current_line_len().saturating_sub(1);
+        if self.cursor.col < max_col {
             self.cursor.col += 1;
-        } else if self.cursor.line + 1 < self.line_count() {
-            self.cursor.line += 1;
-            self.cursor.col = 0;
         }
     }
 
@@ -396,7 +392,7 @@ impl Buffer {
     }
 
     pub fn move_to_line_end(&mut self) {
-        self.cursor.col = self.current_line_len();
+        self.cursor.col = self.current_line_len().saturating_sub(1);
     }
 
     pub fn move_to_first_line(&mut self) {
@@ -425,7 +421,7 @@ impl Buffer {
 
             // Skip current word chars.
             while col < line_len {
-                if rope_line.char(col).is_alphanumeric() || rope_line.char(col) == '_' {
+                if is_word_char(rope_line.char(col)) {
                     col += 1;
                 } else {
                     break;
@@ -433,7 +429,7 @@ impl Buffer {
             }
             // Skip non-word chars.
             while col < line_len {
-                if !rope_line.char(col).is_alphanumeric() && rope_line.char(col) != '_' {
+                if !is_word_char(rope_line.char(col)) {
                     col += 1;
                 } else {
                     break;
@@ -472,7 +468,7 @@ impl Buffer {
 
             // Skip non-word chars.
             while col < line_len {
-                if !rope_line.char(col).is_alphanumeric() && rope_line.char(col) != '_' {
+                if !is_word_char(rope_line.char(col)) {
                     col += 1;
                 } else {
                     break;
@@ -481,7 +477,7 @@ impl Buffer {
             // Skip word chars to find the end.
             if col < line_len {
                 while col + 1 < line_len {
-                    if rope_line.char(col + 1).is_alphanumeric() || rope_line.char(col + 1) == '_' {
+                    if is_word_char(rope_line.char(col + 1)) {
                         col += 1;
                     } else {
                         break;
@@ -519,14 +515,14 @@ impl Buffer {
         let rope_line = self.rope.line(line);
 
         while col > 0 {
-            if !rope_line.char(col - 1).is_alphanumeric() && rope_line.char(col - 1) != '_' {
+            if !is_word_char(rope_line.char(col - 1)) {
                 col -= 1;
             } else {
                 break;
             }
         }
         while col > 0 {
-            if rope_line.char(col - 1).is_alphanumeric() || rope_line.char(col - 1) == '_' {
+            if is_word_char(rope_line.char(col - 1)) {
                 col -= 1;
             } else {
                 break;
@@ -624,20 +620,19 @@ impl Buffer {
 
     pub fn insert_line_below(&mut self) -> Option<EditInfo> {
         self.save_undo();
-        let line_end = if self.cursor.line + 1 < self.rope.len_lines() {
-            self.rope.line_to_char(self.cursor.line + 1)
-        } else {
-            let len = self.rope.len_chars();
-            if len > 0 && self.rope.char(len - 1) != '\n' {
-                self.rope.insert_char(len, '\n');
-            }
-            self.rope.len_chars()
-        };
-        let start_byte = self.rope.char_to_byte(line_end);
-        let start_pos = self.position_at_char(line_end);
-        self.rope.insert_char(line_end, '\n');
-        let new_end_byte = start_byte + 1;
-        let new_end_pos = self.position_at_char(line_end + 1);
+        let line = self.rope.line(self.cursor.line);
+        let line_chars = line.len_chars();
+        let insert_at = self.rope.line_to_char(self.cursor.line) + line_chars;
+        // If the current line has no trailing newline (last line of file),
+        // insert two \n: one to terminate this line, one for the new line.
+        // Otherwise ropey creates only a phantom empty line that line_count() hides.
+        let has_nl = line_chars > 0 && line.char(line_chars - 1) == '\n';
+        let text = if has_nl { "\n" } else { "\n\n" };
+        let start_byte = self.rope.char_to_byte(insert_at);
+        let start_pos = self.position_at_char(insert_at);
+        self.rope.insert(insert_at, text);
+        let new_end_byte = start_byte + text.len();
+        let new_end_pos = self.position_at_char(insert_at + text.len());
         self.cursor.line += 1;
         self.cursor.col = 0;
         self.modified = true;
@@ -733,14 +728,6 @@ impl Buffer {
         }
     }
 
-    /// Return the full text of the current line (including newline).
-    pub fn current_line_text(&self) -> String {
-        if self.cursor.line >= self.rope.len_lines() {
-            return String::new();
-        }
-        self.rope.line(self.cursor.line).to_string()
-    }
-
     /// Paste text after the current line. Returns None — caller should do full re-parse.
     pub fn paste_after(&mut self, text: &str) {
         if text.is_empty() {
@@ -748,23 +735,42 @@ impl Buffer {
         }
         self.save_undo();
         if text.ends_with('\n') || text.ends_with("\r\n") {
-            let insert_pos = if self.cursor.line + 1 < self.rope.len_lines() {
-                self.rope.line_to_char(self.cursor.line + 1)
+            // Insert on the line after cursor. Find the end of the current line
+            // (including its newline), or end of file if no trailing newline.
+            let line_slice = self.rope.line(self.cursor.line);
+            let insert_pos = self.rope.line_to_char(self.cursor.line) + line_slice.len_chars();
+            // If current line has no trailing newline (last line of file),
+            // prepend one so the paste starts on its own line.
+            let needs_nl = insert_pos == self.rope.len_chars()
+                && insert_pos > 0
+                && self.rope.char(insert_pos - 1) != '\n';
+            if needs_nl {
+                let combined = format!("\n{}", text);
+                self.rope.insert(insert_pos, &combined);
             } else {
-                let len = self.rope.len_chars();
-                if len > 0 && self.rope.char(len - 1) != '\n' {
-                    self.rope.insert_char(len, '\n');
-                }
-                self.rope.len_chars()
-            };
-            self.rope.insert(insert_pos, text);
+                self.rope.insert(insert_pos, text);
+            }
             self.cursor.line += 1;
             self.cursor.col = 0;
         } else {
-            let idx = self.cursor_char_idx();
-            let insert_at = (idx + 1).min(self.rope.len_chars());
+            let line_start = self.rope.line_to_char(self.cursor.line);
+            let line_len = self.current_line_len();
+            // Insert after cursor char, clamped to line bounds.
+            // On empty lines, insert at line start (before the newline).
+            let clamped_col = self.cursor.col.min(line_len.saturating_sub(1));
+            let insert_col = if line_len == 0 { 0 } else { clamped_col + 1 };
+            let insert_at = (line_start + insert_col).min(self.rope.len_chars());
             self.rope.insert(insert_at, text);
-            self.cursor.col += text.len();
+            // Place cursor at end of inserted text.
+            let newlines = text.chars().filter(|c| *c == '\n').count();
+            if newlines > 0 {
+                self.cursor.line += newlines;
+                let last_nl = text.rfind('\n').unwrap();
+                self.cursor.col = text.len() - last_nl - 2;
+            } else {
+                self.cursor.col = insert_col + text.len() - 1;
+            }
+            self.clamp_cursor();
         }
         self.modified = true;
         self.invalidate_hash();
@@ -809,6 +815,11 @@ impl Buffer {
         self.cursor.line = line.min(self.line_count().saturating_sub(1));
         self.clamp_cursor();
     }
+}
+
+/// Whether a character is a "word" character (alphanumeric or underscore).
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 fn line_len_no_newline(line: &ropey::RopeSlice<'_>) -> usize {

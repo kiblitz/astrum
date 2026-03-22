@@ -240,6 +240,7 @@ fn default_keymap() -> Keymap {
     let v = &mut keymap.visual;
     let visual_bindings: &[(&str, Action)] = &[
         ("esc", Action::EnterNormalMode),
+        ("v", Action::EnterNormalMode),
         ("h", Action::MoveLeft),
         ("j", Action::MoveDown),
         ("k", Action::MoveUp),
@@ -248,6 +249,22 @@ fn default_keymap() -> Keymap {
         ("down", Action::MoveDown),
         ("up", Action::MoveUp),
         ("right", Action::MoveRight),
+        ("w", Action::MoveWordForward),
+        ("e", Action::MoveWordEnd),
+        ("b", Action::MoveWordBackward),
+        ("W", Action::MoveBigWordForward),
+        ("E", Action::MoveBigWordEnd),
+        ("B", Action::MoveBigWordBackward),
+        ("0", Action::MoveToLineStart),
+        ("$", Action::MoveToLineEnd),
+        ("g g", Action::MoveToFirstLine),
+        ("G", Action::MoveToLastLine),
+        ("C-u", Action::HalfPageUp),
+        ("C-d", Action::HalfPageDown),
+        ("d", Action::VisualDelete),
+        ("x", Action::VisualDelete),
+        ("y", Action::VisualYank),
+        ("c", Action::VisualChange),
     ];
     for (seq, action) in visual_bindings {
         if let Some(keys) = parse_key_sequence(seq) {
@@ -458,6 +475,7 @@ keymap {
 
     visual {
         esc "EnterNormalMode"
+        v "EnterNormalMode"
         h "MoveLeft"
         j "MoveDown"
         k "MoveUp"
@@ -466,6 +484,22 @@ keymap {
         down "MoveDown"
         up "MoveUp"
         right "MoveRight"
+        w "MoveWordForward"
+        e "MoveWordEnd"
+        b "MoveWordBackward"
+        W "MoveBigWordForward"
+        E "MoveBigWordEnd"
+        B "MoveBigWordBackward"
+        "0" "MoveToLineStart"
+        "$" "MoveToLineEnd"
+        g { g "MoveToFirstLine" }
+        G "MoveToLastLine"
+        C-u "HalfPageUp"
+        C-d "HalfPageDown"
+        d "VisualDelete"
+        x "VisualDelete"
+        y "VisualYank"
+        c "VisualChange"
     }
 
     browser {
