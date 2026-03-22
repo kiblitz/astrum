@@ -665,6 +665,9 @@ impl Renderer {
             .collect();
         let current_match_idx = buf_search.and_then(|bm| bm.current_match);
 
+        // Bracket match: find matching bracket for cursor position.
+        let bracket_match = find_matching_bracket(buf, cursor.line, cursor.col);
+
         // Editor content
         let cached = highlight_cache.get(buf.id);
         let mut editor_lines = Vec::new();
@@ -712,6 +715,13 @@ impl Renderer {
                 let sel = visual_line_range(line_idx, anchor_line, anchor_col, cursor.line, cursor.col, buf);
                 if let Some((start_col, end_col)) = sel {
                     spans = overlay_visual_highlights(spans, start_col, end_col);
+                }
+            }
+
+            // Overlay bracket match highlight on this line.
+            if let Some((match_line, match_col)) = bracket_match {
+                if line_idx == match_line {
+                    spans = overlay_bracket_highlight(spans, match_col);
                 }
             }
 
@@ -1184,6 +1194,123 @@ fn overlay_visual_highlights<'a>(spans: Vec<Span<'a>>, sel_start: usize, sel_end
         if local_end < span_chars.len() {
             let text: String = span_chars[local_end..].iter().collect();
             result.push(Span::styled(text, base_style));
+        }
+
+        col = span_end;
+    }
+
+    result
+}
+
+/// Return the matching bracket char for an opening/closing bracket.
+fn bracket_pair(c: char) -> Option<(char, bool)> {
+    match c {
+        '(' => Some((')', true)),   // opening, scan forward
+        ')' => Some(('(', false)),
+        '[' => Some((']', true)),
+        ']' => Some(('[', false)),
+        '{' => Some(('}', true)),
+        '}' => Some(('{', false)),
+        '<' => Some(('>', true)),
+        '>' => Some(('<', false)),
+        _ => None,
+    }
+}
+
+/// Find the matching bracket for the character at (line, col).
+/// Returns Some((match_line, match_col)) or None.
+fn find_matching_bracket(buf: &Buffer, line: usize, col: usize) -> Option<(usize, usize)> {
+    if line >= buf.rope.len_lines() {
+        return None;
+    }
+    let rope_line = buf.rope.line(line);
+    if col >= rope_line.len_chars() {
+        return None;
+    }
+    let ch = rope_line.char(col);
+    let (target, forward) = bracket_pair(ch)?;
+
+    let mut depth: i32 = 0;
+    if forward {
+        // Scan forward from (line, col+1)
+        let mut l = line;
+        let mut c = col + 1;
+        let total_lines = buf.rope.len_lines();
+        while l < total_lines {
+            let rl = buf.rope.line(l);
+            let len = rl.len_chars();
+            while c < len {
+                let rc = rl.char(c);
+                if rc == ch {
+                    depth += 1;
+                } else if rc == target {
+                    if depth == 0 {
+                        return Some((l, c));
+                    }
+                    depth -= 1;
+                }
+                c += 1;
+            }
+            l += 1;
+            c = 0;
+        }
+    } else {
+        // Scan backward from (line, col-1)
+        let mut l = line;
+        let mut c = col as i64 - 1;
+        loop {
+            if c < 0 {
+                if l == 0 {
+                    break;
+                }
+                l -= 1;
+                c = buf.rope.line(l).len_chars() as i64 - 1;
+                continue;
+            }
+            let rc = buf.rope.line(l).char(c as usize);
+            if rc == ch {
+                depth += 1;
+            } else if rc == target {
+                if depth == 0 {
+                    return Some((l, c as usize));
+                }
+                depth -= 1;
+            }
+            c -= 1;
+        }
+    }
+    None
+}
+
+/// Highlight a single character at `col` with the bracket match style.
+fn overlay_bracket_highlight<'a>(spans: Vec<Span<'a>>, match_col: usize) -> Vec<Span<'a>> {
+    let style = Style::default()
+        .fg(Color::Rgb(255, 215, 0))
+        .add_modifier(Modifier::BOLD);
+
+    let mut result = Vec::new();
+    let mut col = 0usize;
+
+    for span in spans {
+        let span_chars: Vec<char> = span.content.chars().collect();
+        let span_start = col;
+        let span_end = col + span_chars.len();
+        let base_style = span.style;
+
+        if match_col >= span_start && match_col < span_end {
+            let local = match_col - span_start;
+            if local > 0 {
+                let text: String = span_chars[..local].iter().collect();
+                result.push(Span::styled(text, base_style));
+            }
+            let text: String = span_chars[local..local + 1].iter().collect();
+            result.push(Span::styled(text, style));
+            if local + 1 < span_chars.len() {
+                let text: String = span_chars[local + 1..].iter().collect();
+                result.push(Span::styled(text, base_style));
+            }
+        } else {
+            result.push(span);
         }
 
         col = span_end;

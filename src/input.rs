@@ -40,6 +40,9 @@ pub struct InputHandler {
 
     // Normal mode count prefix (e.g. "5j" to move 5 lines).
     pub count_prefix: Option<usize>,
+
+    /// When true, next char keypress produces InsertChar (used by visual surround).
+    pub awaiting_char: bool,
 }
 
 impl InputHandler {
@@ -53,6 +56,7 @@ impl InputHandler {
             keymap,
             pending_branch: None,
             count_prefix: None,
+            awaiting_char: false,
         }
     }
 
@@ -175,6 +179,19 @@ impl InputHandler {
 
         if let Some(action) = self.handle_common(&key) {
             return action;
+        }
+
+        // Awaiting a single char (e.g., visual surround): next char bypasses keymap.
+        if self.awaiting_char {
+            self.awaiting_char = false;
+            let input = KeyInput::from_event(&key);
+            if let KeyCode::Char(c) = key.code {
+                if !input.ctrl && !input.alt {
+                    return Action::InsertChar(c);
+                }
+            }
+            // Non-char key cancels the await.
+            return Action::Noop;
         }
 
         let input = KeyInput::from_event(&key);

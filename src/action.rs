@@ -67,6 +67,7 @@ pub enum Action {
     VisualDelete,
     VisualChange,
     VisualYank,
+    VisualSurround,
 
     // -- Jump history --
     JumpBack,
@@ -178,6 +179,7 @@ impl Action {
             "VisualDelete" => Some(Action::VisualDelete),
             "VisualChange" => Some(Action::VisualChange),
             "VisualYank" => Some(Action::VisualYank),
+            "VisualSurround" => Some(Action::VisualSurround),
             "JumpBack" => Some(Action::JumpBack),
             "JumpForward" => Some(Action::JumpForward),
             "EnterSearchForward" => Some(Action::EnterSearchForward),
@@ -265,6 +267,7 @@ impl Action {
             Action::VisualDelete => "Delete selection",
             Action::VisualChange => "Change selection",
             Action::VisualYank => "Yank selection",
+            Action::VisualSurround => "Surround selection",
             Action::JumpBack => "Jump back",
             Action::JumpForward => "Jump forward",
             Action::EnterSearchForward => "Search forward",

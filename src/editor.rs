@@ -228,6 +228,8 @@ pub struct Editor {
     pending_operator: Option<(Action, usize)>,
     /// Visual mode anchor: (line, col) where selection started.
     visual_anchor: Option<(usize, usize)>,
+    /// Pending surround: waiting for the wrap character in visual mode.
+    pending_surround: bool,
     /// Set after the first `:q` on the last pane. Cleared by any substantive action.
     quit_pending: bool,
 }
@@ -297,6 +299,7 @@ impl Editor {
             search: SearchState::new(),
             pending_operator: None,
             visual_anchor: None,
+            pending_surround: false,
             quit_pending: false,
         })
     }
@@ -686,6 +689,17 @@ impl Editor {
             self.quit_pending = false;
         }
 
+        // Surround-pending: wrap visual selection with the typed character.
+        if self.pending_surround {
+            self.pending_surround = false;
+            self.input.pending_display.clear();
+            if let Action::InsertChar(c) = action {
+                self.visual_surround(c);
+                return Ok(());
+            }
+            // Non-char cancelled the surround (already handled by input.rs).
+        }
+
         // Operator-pending handling: compose operator + motion.
         if let Some((op, op_count)) = self.pending_operator.take() {
             // Same operator repeated = linewise (dd, cc, yy).
@@ -829,6 +843,7 @@ impl Editor {
             Action::EnterNormalMode => {
                 self.input.mode = Mode::Normal;
                 self.visual_anchor = None;
+                self.pending_surround = false;
                 // Clamp cursor back from insert-mode append position.
                 self.with_buffer(|b| {
                     let max_col = b.current_line_len().saturating_sub(1);
@@ -1050,6 +1065,11 @@ impl Editor {
             }
             Action::VisualChange => {
                 self.visual_operate(VisualOp::Change);
+            }
+            Action::VisualSurround => {
+                self.pending_surround = true;
+                self.input.awaiting_char = true;
+                self.input.pending_display = "s".to_string();
             }
 
             Action::Noop => {}
@@ -1901,6 +1921,44 @@ impl Editor {
                 self.status_message = format!("{} chars yanked", end - start);
             }
         }
+        self.input.mode = Mode::Normal;
+        self.visual_anchor = None;
+    }
+
+    /// Surround the visual selection with a character pair.
+    /// Brackets get paired (e.g. '(' wraps with '(' and ')'),
+    /// other characters use the same char on both sides.
+    fn visual_surround(&mut self, c: char) {
+        let range = self.visual_char_range();
+        let (start, end) = match range {
+            Some(r) if r.0 < r.1 => r,
+            _ => {
+                self.input.mode = Mode::Normal;
+                self.visual_anchor = None;
+                return;
+            }
+        };
+
+        let (open, close) = match c {
+            '(' | ')' => ('(', ')'),
+            '[' | ']' => ('[', ']'),
+            '{' | '}' => ('{', '}'),
+            '<' | '>' => ('<', '>'),
+            _ => (c, c),
+        };
+
+        // Insert close at end first (preserves start index), then open at start.
+        // Single undo snapshot so the whole surround undoes as one operation.
+        self.sync_buffer(|b| {
+            b.save_undo();
+            let close_str = close.to_string();
+            let open_str = open.to_string();
+            b.rope.insert(end, &close_str);
+            b.rope.insert(start, &open_str);
+            b.invalidate_hash();
+            b.modified = true;
+        });
+        self.rehighlight_active();
         self.input.mode = Mode::Normal;
         self.visual_anchor = None;
     }

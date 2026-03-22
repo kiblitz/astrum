@@ -117,11 +117,11 @@ impl Buffer {
     }
 
     /// Invalidate the cached content hash. Called by mutation methods.
-    fn invalidate_hash(&mut self) {
+    pub fn invalidate_hash(&mut self) {
         self.content_hash = None;
     }
 
-    fn save_undo(&mut self) {
+    pub fn save_undo(&mut self) {
         self.undo_stack.push(UndoEntry {
             rope_snapshot: self.rope.clone(),
             cursor: self.cursor,

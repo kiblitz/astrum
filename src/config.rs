@@ -265,6 +265,7 @@ fn default_keymap() -> Keymap {
         ("x", Action::VisualDelete),
         ("y", Action::VisualYank),
         ("c", Action::VisualChange),
+        ("s", Action::VisualSurround),
     ];
     for (seq, action) in visual_bindings {
         if let Some(keys) = parse_key_sequence(seq) {
@@ -500,6 +501,7 @@ keymap {
         x "VisualDelete"
         y "VisualYank"
         c "VisualChange"
+        s "VisualSurround"
     }
 
     browser {
