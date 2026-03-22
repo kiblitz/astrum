@@ -147,7 +147,11 @@ fn default_keymap() -> Keymap {
         ("up", Action::MoveUp),
         ("right", Action::MoveRight),
         ("w", Action::MoveWordForward),
+        ("e", Action::MoveWordEnd),
         ("b", Action::MoveWordBackward),
+        ("W", Action::MoveBigWordForward),
+        ("E", Action::MoveBigWordEnd),
+        ("B", Action::MoveBigWordBackward),
         ("0", Action::MoveToLineStart),
         ("$", Action::MoveToLineEnd),
         ("G", Action::MoveToLastLine),
@@ -351,7 +355,11 @@ keymap {
         up "MoveUp"
         right "MoveRight"
         w "MoveWordForward"
+        e "MoveWordEnd"
         b "MoveWordBackward"
+        W "MoveBigWordForward"
+        E "MoveBigWordEnd"
+        B "MoveBigWordBackward"
         "0" "MoveToLineStart"
         "$" "MoveToLineEnd"
         G "MoveToLastLine"

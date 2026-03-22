@@ -456,6 +456,53 @@ impl Buffer {
         self.cursor.col = 0;
     }
 
+    pub fn move_word_end(&mut self) {
+        let line_count = self.line_count();
+        let start_line = self.cursor.line;
+        let mut line = start_line;
+        let mut col = self.cursor.col + 1; // Move past current position.
+
+        // Try current line first, then at most the next line.
+        for _ in 0..2 {
+            if line >= line_count {
+                break;
+            }
+            let rope_line = self.rope.line(line);
+            let line_len = line_len_no_newline(&rope_line);
+
+            // Skip non-word chars.
+            while col < line_len {
+                if !rope_line.char(col).is_alphanumeric() && rope_line.char(col) != '_' {
+                    col += 1;
+                } else {
+                    break;
+                }
+            }
+            // Skip word chars to find the end.
+            if col < line_len {
+                while col + 1 < line_len {
+                    if rope_line.char(col + 1).is_alphanumeric() || rope_line.char(col + 1) == '_' {
+                        col += 1;
+                    } else {
+                        break;
+                    }
+                }
+                self.cursor.line = line;
+                self.cursor.col = col;
+                return;
+            }
+
+            line += 1;
+            col = 0;
+        }
+
+        // End of file.
+        let target_line = (start_line + 1).min(line_count.saturating_sub(1));
+        self.cursor.line = target_line;
+        let rope_line = self.rope.line(self.cursor.line);
+        self.cursor.col = line_len_no_newline(&rope_line).saturating_sub(1);
+    }
+
     pub fn move_word_backward(&mut self) {
         let mut line = self.cursor.line;
         let mut col = self.cursor.col;
@@ -485,6 +532,91 @@ impl Buffer {
                 break;
             }
         }
+
+        self.cursor.line = line;
+        self.cursor.col = col;
+    }
+
+    /// Move to start of next WORD (whitespace-delimited). Jumps at most 1 line.
+    pub fn move_big_word_forward(&mut self) {
+        let line_count = self.line_count();
+        let start_line = self.cursor.line;
+        let mut line = start_line;
+        let mut col = self.cursor.col;
+
+        for _ in 0..2 {
+            if line >= line_count { break; }
+            let rope_line = self.rope.line(line);
+            let line_len = line_len_no_newline(&rope_line);
+
+            // Skip non-whitespace.
+            while col < line_len && !rope_line.char(col).is_whitespace() { col += 1; }
+            // Skip whitespace.
+            while col < line_len && rope_line.char(col).is_whitespace() { col += 1; }
+
+            if col < line_len {
+                self.cursor.line = line;
+                self.cursor.col = col;
+                return;
+            }
+            line += 1;
+            col = 0;
+        }
+
+        let target_line = (start_line + 1).min(line_count.saturating_sub(1));
+        self.cursor.line = target_line;
+        self.cursor.col = 0;
+    }
+
+    /// Move to end of current/next WORD (whitespace-delimited). Jumps at most 1 line.
+    pub fn move_big_word_end(&mut self) {
+        let line_count = self.line_count();
+        let start_line = self.cursor.line;
+        let mut line = start_line;
+        let mut col = self.cursor.col + 1;
+
+        for _ in 0..2 {
+            if line >= line_count { break; }
+            let rope_line = self.rope.line(line);
+            let line_len = line_len_no_newline(&rope_line);
+
+            // Skip whitespace.
+            while col < line_len && rope_line.char(col).is_whitespace() { col += 1; }
+            // Advance to end of WORD.
+            if col < line_len {
+                while col + 1 < line_len && !rope_line.char(col + 1).is_whitespace() { col += 1; }
+                self.cursor.line = line;
+                self.cursor.col = col;
+                return;
+            }
+            line += 1;
+            col = 0;
+        }
+
+        let target_line = (start_line + 1).min(line_count.saturating_sub(1));
+        self.cursor.line = target_line;
+        let rope_line = self.rope.line(self.cursor.line);
+        self.cursor.col = line_len_no_newline(&rope_line).saturating_sub(1);
+    }
+
+    /// Move to start of previous WORD (whitespace-delimited). Jumps at most 1 line.
+    pub fn move_big_word_backward(&mut self) {
+        let mut line = self.cursor.line;
+        let mut col = self.cursor.col;
+
+        if col == 0 {
+            if line == 0 { return; }
+            line -= 1;
+            self.cursor.line = line;
+            col = line_len_no_newline(&self.rope.line(line));
+        }
+
+        let rope_line = self.rope.line(line);
+
+        // Skip whitespace backward.
+        while col > 0 && rope_line.char(col - 1).is_whitespace() { col -= 1; }
+        // Skip non-whitespace backward.
+        while col > 0 && !rope_line.char(col - 1).is_whitespace() { col -= 1; }
 
         self.cursor.line = line;
         self.cursor.col = col;

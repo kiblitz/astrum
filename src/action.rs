@@ -27,7 +27,11 @@ pub enum Action {
     MoveLeft,
     MoveRight,
     MoveWordForward,
+    MoveWordEnd,
     MoveWordBackward,
+    MoveBigWordForward,
+    MoveBigWordEnd,
+    MoveBigWordBackward,
     MoveToLineStart,
     MoveToLineEnd,
     MoveToFirstLine,
@@ -137,7 +141,11 @@ impl Action {
             "MoveLeft" => Some(Action::MoveLeft),
             "MoveRight" => Some(Action::MoveRight),
             "MoveWordForward" => Some(Action::MoveWordForward),
+            "MoveWordEnd" => Some(Action::MoveWordEnd),
             "MoveWordBackward" => Some(Action::MoveWordBackward),
+            "MoveBigWordForward" => Some(Action::MoveBigWordForward),
+            "MoveBigWordEnd" => Some(Action::MoveBigWordEnd),
+            "MoveBigWordBackward" => Some(Action::MoveBigWordBackward),
             "MoveToLineStart" => Some(Action::MoveToLineStart),
             "MoveToLineEnd" => Some(Action::MoveToLineEnd),
             "MoveToFirstLine" => Some(Action::MoveToFirstLine),
@@ -217,7 +225,11 @@ impl Action {
             Action::MoveLeft => "Move left",
             Action::MoveRight => "Move right",
             Action::MoveWordForward => "Move word forward",
+            Action::MoveWordEnd => "Move to end of word",
             Action::MoveWordBackward => "Move word backward",
+            Action::MoveBigWordForward => "Move WORD forward",
+            Action::MoveBigWordEnd => "Move to end of WORD",
+            Action::MoveBigWordBackward => "Move WORD backward",
             Action::MoveToLineStart => "Move to line start",
             Action::MoveToLineEnd => "Move to line end",
             Action::MoveToFirstLine => "Move to first line",
@@ -299,7 +311,8 @@ impl Action {
     pub fn all_configurable() -> Vec<Action> {
         vec![
             Action::MoveUp, Action::MoveDown, Action::MoveLeft, Action::MoveRight,
-            Action::MoveWordForward, Action::MoveWordBackward,
+            Action::MoveWordForward, Action::MoveWordEnd, Action::MoveWordBackward,
+            Action::MoveBigWordForward, Action::MoveBigWordEnd, Action::MoveBigWordBackward,
             Action::MoveToLineStart, Action::MoveToLineEnd,
             Action::MoveToFirstLine, Action::MoveToLastLine,
             Action::PageUp, Action::PageDown, Action::HalfPageUp, Action::HalfPageDown,
@@ -340,7 +353,11 @@ impl Action {
                 | Action::MoveLeft
                 | Action::MoveRight
                 | Action::MoveWordForward
+                | Action::MoveWordEnd
                 | Action::MoveWordBackward
+                | Action::MoveBigWordForward
+                | Action::MoveBigWordEnd
+                | Action::MoveBigWordBackward
                 | Action::MoveToLineStart
                 | Action::MoveToLineEnd
                 | Action::MoveToFirstLine
