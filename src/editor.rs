@@ -1252,38 +1252,64 @@ impl Editor {
             }
 
             Action::CommentToggle => {
-                // Look up comment prefix from active buffer's file extension.
-                let prefix = self.sync_buffer(|b| {
+                // Look up comment syntax from active buffer's file extension.
+                let syntax = self.sync_buffer(|b| {
                     b.path.as_ref().and_then(|p| {
                         p.extension()
                             .and_then(|e| e.to_str())
                             .map(|e| e.to_string())
                     })
                 }).flatten().and_then(|ext| {
-                    self.comment_syntax.get(&ext).and_then(|cs| cs.line.clone())
+                    self.comment_syntax.get(&ext).cloned()
                 });
 
-                if let Some(prefix) = prefix {
-                    // Determine line range: visual selection or current line.
-                    let (first, last) = if let Some((anchor_line, _)) = self.visual_anchor {
-                        let cursor_line = self.pane_layout.active_pane().cursor.line;
-                        (anchor_line.min(cursor_line), anchor_line.max(cursor_line))
-                    } else {
-                        let line = self.pane_layout.active_pane().cursor.line;
-                        (line, line)
-                    };
-
-                    self.with_buffer_edit(|b| {
-                        b.toggle_line_comment(first, last, &prefix);
-                        None
-                    });
-                    self.rehighlight_active();
-
-                    if self.visual_anchor.is_some() {
-                        self.exit_visual_mode();
-                    }
-                } else {
+                let Some(syntax) = syntax else {
                     self.status_message = "No comment syntax for this file type".to_string();
+                    return Ok(());
+                };
+
+                if self.visual_anchor.is_some() {
+                    // Visual mode: block comment around selection.
+                    if let Some((open, close)) = &syntax.block {
+                        let range = self.visual_char_range();
+                        if let Some((start, end)) = range {
+                            let open = open.clone();
+                            let close = close.clone();
+                            self.with_buffer_edit(|b| {
+                                b.toggle_block_comment(start, end, &open, &close);
+                                None
+                            });
+                            self.rehighlight_active();
+                        }
+                    } else if let Some(prefix) = &syntax.line {
+                        // Fallback to line comments if no block syntax.
+                        let cursor_line = self.pane_layout.active_pane().cursor.line;
+                        let anchor_line = self.visual_anchor.unwrap().0;
+                        let first = anchor_line.min(cursor_line);
+                        let last = anchor_line.max(cursor_line);
+                        let prefix = prefix.clone();
+                        self.with_buffer_edit(|b| {
+                            b.toggle_line_comment(first, last, &prefix);
+                            None
+                        });
+                        self.rehighlight_active();
+                    } else {
+                        self.status_message = "No comment syntax for this file type".to_string();
+                    }
+                    self.exit_visual_mode();
+                } else {
+                    // Normal mode: line comment on current line.
+                    if let Some(prefix) = &syntax.line {
+                        let line = self.pane_layout.active_pane().cursor.line;
+                        let prefix = prefix.clone();
+                        self.with_buffer_edit(|b| {
+                            b.toggle_line_comment(line, line, &prefix);
+                            None
+                        });
+                        self.rehighlight_active();
+                    } else {
+                        self.status_message = "No line comment syntax for this file type".to_string();
+                    }
                 }
             }
 

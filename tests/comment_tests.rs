@@ -215,3 +215,90 @@ fn uncomment_multibyte() {
     b.toggle_line_comment(0, 1, "//");
     check(&state(&b), expect!["(0,0) \"  café\\n  naïve\\n\""]);
 }
+
+// -- Block comments --
+
+#[test]
+fn block_comment_wrap() {
+    let mut b = buf("hello world\n", 0, 0);
+    // Select "hello" (chars 0..5)
+    b.toggle_block_comment(0, 5, "/*", "*/");
+    check(&state(&b), expect!["(0,0) \"/*hello*/ world\\n\""]);
+}
+
+#[test]
+fn block_comment_unwrap() {
+    let mut b = buf("/*hello*/ world\n", 0, 0);
+    // Select "/*hello*/" (chars 0..9)
+    b.toggle_block_comment(0, 9, "/*", "*/");
+    check(&state(&b), expect!["(0,0) \"hello world\\n\""]);
+}
+
+#[test]
+fn block_comment_multiline() {
+    let mut b = buf("aaa\nbbb\nccc\n", 0, 0);
+    // Select all of "aaa\nbbb\n" (chars 0..8)
+    b.toggle_block_comment(0, 8, "/*", "*/");
+    check(&state(&b), expect!["(0,0) \"/*aaa\\nbbb\\n*/ccc\\n\""]);
+}
+
+#[test]
+fn block_comment_unwrap_multiline() {
+    let mut b = buf("/*aaa\nbbb\n*/ccc\n", 0, 0);
+    b.toggle_block_comment(0, 12, "/*", "*/");
+    check(&state(&b), expect!["(0,0) \"aaa\\nbbb\\nccc\\n\""]);
+}
+
+#[test]
+fn block_comment_html() {
+    let mut b = buf("<div>hello</div>\n", 0, 0);
+    b.toggle_block_comment(0, 16, "<!--", "-->");
+    check(&state(&b), expect!["(0,0) \"<!--<div>hello</div>-->\\n\""]);
+}
+
+#[test]
+fn block_comment_unwrap_html() {
+    let mut b = buf("<!--<div>hello</div>-->\n", 0, 0);
+    b.toggle_block_comment(0, 23, "<!--", "-->");
+    check(&state(&b), expect!["(0,0) \"<div>hello</div>\\n\""]);
+}
+
+#[test]
+fn block_comment_undo_is_atomic() {
+    let mut b = buf("hello world\n", 0, 0);
+    b.toggle_block_comment(0, 5, "/*", "*/");
+    assert!(b.rope.to_string().starts_with("/*hello*/"));
+    b.undo();
+    check(&state(&b), expect!["(0,0) \"hello world\\n\""]);
+}
+
+#[test]
+fn block_comment_empty_range() {
+    let mut b = buf("hello\n", 0, 0);
+    b.toggle_block_comment(0, 0, "/*", "*/");
+    // Empty range, nothing happens.
+    check(&state(&b), expect!["(0,0) \"hello\\n\""]);
+}
+
+#[test]
+fn block_comment_with_whitespace() {
+    let mut b = buf("/* hello */\n", 0, 0);
+    // Selection includes the block comment with inner spaces.
+    b.toggle_block_comment(0, 11, "/*", "*/");
+    check(&state(&b), expect!["(0,0) \" hello \\n\""]);
+}
+
+#[test]
+fn block_comment_lua() {
+    let mut b = buf("local x = 1\n", 0, 0);
+    b.toggle_block_comment(0, 11, "--[[", "]]");
+    check(&state(&b), expect!["(0,0) \"--[[local x = 1]]\\n\""]);
+}
+
+#[test]
+fn block_comment_multibyte_chars() {
+    let mut b = buf("café naïve\n", 0, 0);
+    // Select "café" (4 chars)
+    b.toggle_block_comment(0, 4, "/*", "*/");
+    check(&state(&b), expect!["(0,0) \"/*café*/ naïve\\n\""]);
+}

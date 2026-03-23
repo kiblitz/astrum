@@ -779,6 +779,48 @@ impl Buffer {
         self.clamp_cursor();
         self.mark_modified();
     }
+
+    /// Toggle block comment delimiters around a char range.
+    ///
+    /// If the selected text starts with `open` and ends with `close` (after
+    /// trimming whitespace), removes them. Otherwise wraps the selection.
+    pub fn toggle_block_comment(&mut self, start: usize, end: usize, open: &str, close: &str) {
+        let end = end.min(self.rope.len_chars());
+        let start = start.min(end);
+        if start == end {
+            return;
+        }
+
+        let selected: String = self.rope.slice(start..end).chars().collect();
+        let trimmed = selected.trim();
+        let open_chars = open.chars().count();
+        let close_chars = close.chars().count();
+
+        self.save_undo();
+
+        if trimmed.starts_with(open) && trimmed.ends_with(close) && trimmed.len() >= open.len() + close.len() {
+            // Uncomment: find the actual positions of open/close within the selection.
+            let leading_ws = selected.chars().take_while(|c| c.is_whitespace()).count();
+            let trailing_ws = selected.chars().rev().take_while(|c| c.is_whitespace()).count();
+
+            // Remove close first (higher index) to preserve start offset.
+            let close_start = end - trailing_ws - close_chars;
+            let close_end = end - trailing_ws;
+            self.rope.remove(close_start..close_end);
+
+            // Remove open.
+            let open_start = start + leading_ws;
+            let open_end = open_start + open_chars;
+            self.rope.remove(open_start..open_end);
+        } else {
+            // Comment: insert close at end, then open at start.
+            self.rope.insert(end, close);
+            self.rope.insert(start, open);
+        }
+
+        self.clamp_cursor();
+        self.mark_modified();
+    }
 }
 
 /// Whether a character is a "word" character (alphanumeric or underscore).

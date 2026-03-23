@@ -323,7 +323,7 @@ fn default_keymap() -> Keymap {
         ("$", Action::MoveToLineEnd),
         ("G", Action::MoveToLastLine),
         ("g g", Action::MoveToFirstLine),
-        ("g c", Action::CommentToggle),
+        ("space ; ;", Action::CommentToggle),
         ("C-f", Action::PageDown),
         ("C-b", Action::PageUp),
         ("C-d", Action::HalfPageDown),
@@ -422,7 +422,7 @@ fn default_keymap() -> Keymap {
         ("0", Action::MoveToLineStart),
         ("$", Action::MoveToLineEnd),
         ("g g", Action::MoveToFirstLine),
-        ("g c", Action::CommentToggle),
+        ("space ; ;", Action::CommentToggle),
         ("G", Action::MoveToLastLine),
         ("C-u", Action::HalfPageUp),
         ("C-d", Action::HalfPageDown),
@@ -515,7 +515,7 @@ general {
 //   g { g "MoveToFirstLine" }   // press g, then g
 //   spc { f { f "OpenFileBrowser" } }
 
-// Language configuration for comment toggling (gc).
+// Language configuration for comment toggling (SPC ; ;).
 // Each entry maps file extensions to comment syntax.
 // You can add your own languages or override defaults here.
 //
@@ -544,7 +544,7 @@ keymap {
         "0" "MoveToLineStart"
         "$" "MoveToLineEnd"
         G "MoveToLastLine"
-        g { g "MoveToFirstLine"; c "CommentToggle" }
+        g { g "MoveToFirstLine" }
 
         // Page movement
         C-f "PageDown"
@@ -623,6 +623,7 @@ keymap {
                 q "QuitAll"
                 Q "ForceQuitAll"
             }
+            ";" { ";" "CommentToggle" }
             tab "JumpBack"
             S-tab "JumpForward"
         }
@@ -659,7 +660,7 @@ keymap {
         B "MoveBigWordBackward"
         "0" "MoveToLineStart"
         "$" "MoveToLineEnd"
-        g { g "MoveToFirstLine"; c "CommentToggle" }
+        g { g "MoveToFirstLine" }
         G "MoveToLastLine"
         C-u "HalfPageUp"
         C-d "HalfPageDown"
@@ -668,6 +669,11 @@ keymap {
         y "VisualYank"
         c "VisualChange"
         s "VisualSurround"
+        spc {
+            ";" { ";" "CommentToggle" }
+            tab "JumpBack"
+            S-tab "JumpForward"
+        }
     }
 
     browser {

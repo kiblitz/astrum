@@ -161,20 +161,23 @@ Vim-style macro recording and playback.
 - Uses `awaiting_char` + `awaiting_macro_record`/`awaiting_macro_play` flags for register selection
 - `play_macro()` uses `Box::pin` to handle async recursion (macros can contain `@` to nest)
 
-### Comment toggle (`gc`)
-Line comment toggling for any file type.
+### Comment toggle (`SPC ; ;`)
+Comment toggling for any file type.
 
-- **Keybinding**: `gc` in both normal mode (toggles current line) and visual mode (toggles selected lines)
+- **Keybinding**: `SPC ; ;` in both normal and visual mode
+- **Normal mode**: toggles line comment on the current line using `line` prefix (e.g. `//`, `#`)
+- **Visual mode**: toggles block comment around the selection using `block` delimiters (e.g. `/* */`, `<!-- -->`); falls back to line comments if no block syntax defined
 - **Comment syntax**: per-extension lookup from `comment_syntax: HashMap<String, CommentSyntax>` in Editor
-- **Config**: `CommentSyntax { line: Option<String>, block: Option<(String, String)> }` — only `line` is used currently
+- **Config**: `CommentSyntax { line: Option<String>, block: Option<(String, String)> }`
 - **Default languages**: ~40 languages built into `default_comment_syntax()` in config.rs (C-family, Python, Ruby, Lua, Haskell, HTML, etc.)
 - **User-configurable**: KDL config `languages { }` block lets users add/override comment syntax per extension
-- **Toggle logic**: if all non-empty lines in range are commented → uncomment; otherwise → comment all
+- **Line toggle logic**: if all non-empty lines in range are commented → uncomment; otherwise → comment all
+- **Block toggle logic**: if selection starts with open and ends with close delimiter → unwrap; otherwise → wrap
 - **Comment insertion**: uses minimum indentation of non-empty lines as insertion point (aligns prefixes)
 - **Uncomment removal**: strips prefix + optional trailing space, preserving surrounding indentation
-- **Empty lines**: skipped during both comment and uncomment (never modified)
+- **Empty lines**: skipped during line comment/uncomment (never modified)
 - **Undo**: single `save_undo()` for the entire operation (atomic)
-- **Buffer method**: `toggle_line_comment(first_line, last_line, prefix)` in buffer.rs
+- **Buffer methods**: `toggle_line_comment(first_line, last_line, prefix)`, `toggle_block_comment(start, end, open, close)` in buffer.rs
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.
