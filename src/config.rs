@@ -1,6 +1,7 @@
 use crate::action::Action;
 use crate::keymap::{parse_key_sequence, KeyInput, Keymap};
 use anyhow::{bail, Result};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// General (non-keymap) settings.
@@ -16,71 +17,112 @@ impl Default for GeneralConfig {
     }
 }
 
+/// Comment syntax for a language.
+#[derive(Debug, Clone)]
+pub struct CommentSyntax {
+    pub line: Option<String>,
+    pub block: Option<(String, String)>,
+}
+
 /// Resolved configuration ready for use.
 pub struct Config {
     pub general: GeneralConfig,
     pub keymap: Keymap,
+    /// File extension (without dot) → comment syntax.
+    pub comment_syntax: HashMap<String, CommentSyntax>,
 }
 
 impl Config {
     /// Load config from the default path, or fall back to defaults.
-    pub fn load() -> Result<Self> {
+    ///
+    /// Returns `(config, Option<error_message>)`. On parse/read failure the
+    /// config is the built-in default so the editor can still start, and the
+    /// error string can be displayed on the welcome screen.
+    pub fn load() -> (Self, Option<String>) {
+        match Self::load_inner() {
+            Ok(config) => (config, None),
+            Err(e) => {
+                let default = Config {
+                    general: GeneralConfig::default(),
+                    keymap: default_keymap(),
+                    comment_syntax: default_comment_syntax(),
+                };
+                (default, Some(format!("Config error: {}", e)))
+            }
+        }
+    }
+
+    fn load_inner() -> Result<Self> {
         let mut general = GeneralConfig::default();
         let mut keymap = default_keymap();
+        let mut comment_syntax = default_comment_syntax();
 
         if let Some(path) = config_path() {
-            if path.exists() {
-                let text = std::fs::read_to_string(&path)?;
-                let doc: kdl::KdlDocument = text.parse()
-                    .map_err(|e| anyhow::anyhow!("config parse error: {}", e))?;
-
-                // Parse general settings.
-                if let Some(node) = doc.get("general") {
-                    if let Some(children) = node.children() {
-                        if let Some(theme_node) = children.get("theme") {
-                            if let Some(val) = theme_node.get(0) {
-                                if let Some(s) = val.as_string() {
-                                    general.theme = s.to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Parse keymap modes.
-                if let Some(keymap_node) = doc.get("keymap") {
-                    if let Some(children) = keymap_node.children() {
-                        for mode_name in &["normal", "insert", "visual", "browser"] {
-                            if let Some(mode_node) = children.get(mode_name) {
-                                let mode_keymap = match *mode_name {
-                                    "normal" => &mut keymap.normal,
-                                    "insert" => &mut keymap.insert,
-                                    "visual" => &mut keymap.visual,
-                                    "browser" => &mut keymap.browser,
-                                    _ => unreachable!(),
-                                };
-                                if let Some(bindings) = mode_node.children() {
-                                    parse_keymap_nodes(
-                                        bindings,
-                                        &mut Vec::new(),
-                                        mode_keymap,
-                                        mode_name,
-                                    )?;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
+            if !path.exists() {
                 // Write default config for the user.
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::write(&path, DEFAULT_CONFIG)?;
             }
+
+            let text = std::fs::read_to_string(&path)?;
+            let doc: kdl::KdlDocument = text.parse()
+                .map_err(|e| anyhow::anyhow!("config parse error: {}", e))?;
+
+            // Parse general settings.
+            if let Some(node) = doc.get("general") {
+                if let Some(children) = node.children() {
+                    if let Some(theme_node) = children.get("theme") {
+                        if let Some(val) = theme_node.get(0) {
+                            if let Some(s) = val.as_string() {
+                                general.theme = s.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Parse keymap modes.
+            if let Some(keymap_node) = doc.get("keymap") {
+                if let Some(children) = keymap_node.children() {
+                    for mode_name in &["normal", "insert", "visual", "browser"] {
+                        if let Some(mode_node) = children.get(mode_name) {
+                            let mode_keymap = match *mode_name {
+                                "normal" => &mut keymap.normal,
+                                "insert" => &mut keymap.insert,
+                                "visual" => &mut keymap.visual,
+                                "browser" => &mut keymap.browser,
+                                _ => unreachable!(),
+                            };
+                            if let Some(bindings) = mode_node.children() {
+                                parse_keymap_nodes(
+                                    bindings,
+                                    &mut Vec::new(),
+                                    mode_keymap,
+                                    mode_name,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Parse language config (overrides/extends defaults).
+            if let Some(lang_node) = doc.get("languages") {
+                if let Some(children) = lang_node.children() {
+                    parse_language_nodes(children, &mut comment_syntax);
+                }
+            }
         }
 
-        Ok(Config { general, keymap })
+        Ok(Config { general, keymap, comment_syntax })
+    }
+
+    /// Look up comment syntax for a file path by its extension.
+    pub fn comment_syntax_for(&self, path: &std::path::Path) -> Option<&CommentSyntax> {
+        let ext = path.extension()?.to_str()?;
+        self.comment_syntax.get(ext)
     }
 }
 
@@ -127,6 +169,125 @@ fn parse_keymap_nodes(
     Ok(())
 }
 
+/// Parse the `languages` config block. Each child node is a language name
+/// with `extensions`, `line-comment`, and/or `block-comment` properties.
+fn parse_language_nodes(doc: &kdl::KdlDocument, syntax: &mut HashMap<String, CommentSyntax>) {
+    for node in doc.nodes() {
+        let exts = node.get("extensions")
+            .and_then(|v| v.as_string())
+            .unwrap_or("");
+        let line = node.get("line-comment")
+            .and_then(|v| v.as_string())
+            .map(|s| s.to_string());
+        let block = node.get("block-comment")
+            .and_then(|v| v.as_string())
+            .and_then(|s| {
+                let parts: Vec<&str> = s.splitn(2, ' ').collect();
+                if parts.len() == 2 {
+                    Some((parts[0].to_string(), parts[1].to_string()))
+                } else {
+                    None
+                }
+            });
+        let cs = CommentSyntax { line, block };
+        for ext in exts.split_whitespace() {
+            let ext = ext.trim_start_matches('.');
+            syntax.insert(ext.to_string(), cs.clone());
+        }
+    }
+}
+
+/// Default comment syntax for common languages.
+fn default_comment_syntax() -> HashMap<String, CommentSyntax> {
+    let mut m = HashMap::new();
+
+    let line_and_block = |line: &str, open: &str, close: &str| CommentSyntax {
+        line: Some(line.to_string()),
+        block: Some((open.to_string(), close.to_string())),
+    };
+    let line_only = |line: &str| CommentSyntax {
+        line: Some(line.to_string()),
+        block: None,
+    };
+    let block_only = |open: &str, close: &str| CommentSyntax {
+        line: None,
+        block: Some((open.to_string(), close.to_string())),
+    };
+
+    // C-family (// and /* */)
+    let c_style = line_and_block("//", "/*", "*/");
+    for ext in ["rs", "c", "h", "cpp", "cc", "cxx", "hpp", "hxx", "hh",
+                "js", "mjs", "cjs", "jsx", "ts", "tsx",
+                "java", "go", "swift", "kt", "scala", "cs",
+                "zig", "m", "mm"] {
+        m.insert(ext.to_string(), c_style.clone());
+    }
+
+    // Hash comment (#)
+    let hash = line_only("#");
+    for ext in ["py", "pyi", "rb", "sh", "bash", "zsh",
+                "yml", "yaml", "toml", "pl", "pm",
+                "r", "jl", "ex", "exs", "cr"] {
+        m.insert(ext.to_string(), hash.clone());
+    }
+
+    // OCaml / F# (* *)
+    let ocaml = block_only("(*", "*)");
+    for ext in ["ml", "mli", "fs", "fsi", "fsx"] {
+        m.insert(ext.to_string(), ocaml.clone());
+    }
+
+    // Lisp family (;)
+    let semi = line_only(";");
+    for ext in ["lisp", "cl", "el", "clj", "cljs", "scm", "rkt"] {
+        m.insert(ext.to_string(), semi.clone());
+    }
+
+    // Lua (--)
+    let lua = line_and_block("--", "--[[", "]]");
+    m.insert("lua".to_string(), lua);
+
+    // Haskell (--)
+    let haskell = line_and_block("--", "{-", "-}");
+    for ext in ["hs", "lhs"] {
+        m.insert(ext.to_string(), haskell.clone());
+    }
+
+    // SQL (--)
+    m.insert("sql".to_string(), line_only("--"));
+
+    // HTML / XML / Markdown (<!-- -->)
+    let html = block_only("<!--", "-->");
+    for ext in ["html", "htm", "xml", "svg", "md"] {
+        m.insert(ext.to_string(), html.clone());
+    }
+
+    // CSS (/* */)
+    let css = block_only("/*", "*/");
+    for ext in ["css", "scss", "less", "sass"] {
+        m.insert(ext.to_string(), css.clone());
+    }
+
+    // PHP (// and /* */)
+    m.insert("php".to_string(), line_and_block("//", "/*", "*/"));
+
+    // LaTeX (%)
+    m.insert("tex".to_string(), line_only("%"));
+    m.insert("sty".to_string(), line_only("%"));
+
+    // Erlang (%)
+    m.insert("erl".to_string(), line_only("%"));
+
+    // Vim script (")
+    m.insert("vim".to_string(), line_only("\""));
+
+    // Makefile (#)
+    // Covered by hash above if .sh, but Makefile has no extension.
+    // Extension-based lookup won't match "Makefile", but that's fine.
+
+    m
+}
+
 fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("astrum").join("config.kdl"))
 }
@@ -162,6 +323,7 @@ fn default_keymap() -> Keymap {
         ("$", Action::MoveToLineEnd),
         ("G", Action::MoveToLastLine),
         ("g g", Action::MoveToFirstLine),
+        ("g c", Action::CommentToggle),
         ("C-f", Action::PageDown),
         ("C-b", Action::PageUp),
         ("C-d", Action::HalfPageDown),
@@ -260,6 +422,7 @@ fn default_keymap() -> Keymap {
         ("0", Action::MoveToLineStart),
         ("$", Action::MoveToLineEnd),
         ("g g", Action::MoveToFirstLine),
+        ("g c", Action::CommentToggle),
         ("G", Action::MoveToLastLine),
         ("C-u", Action::HalfPageUp),
         ("C-d", Action::HalfPageDown),
@@ -352,6 +515,15 @@ general {
 //   g { g "MoveToFirstLine" }   // press g, then g
 //   spc { f { f "OpenFileBrowser" } }
 
+// Language configuration for comment toggling (gc).
+// Each entry maps file extensions to comment syntax.
+// You can add your own languages or override defaults here.
+//
+// languages {
+//     my-lang extensions=".xyz .abc" line-comment="//"
+//     my-markup extensions=".mu" block-comment="<! !>"
+// }
+
 keymap {
     normal {
         // Movement
@@ -372,7 +544,7 @@ keymap {
         "0" "MoveToLineStart"
         "$" "MoveToLineEnd"
         G "MoveToLastLine"
-        g { g "MoveToFirstLine" }
+        g { g "MoveToFirstLine"; c "CommentToggle" }
 
         // Page movement
         C-f "PageDown"
@@ -487,7 +659,7 @@ keymap {
         B "MoveBigWordBackward"
         "0" "MoveToLineStart"
         "$" "MoveToLineEnd"
-        g { g "MoveToFirstLine" }
+        g { g "MoveToFirstLine"; c "CommentToggle" }
         G "MoveToLastLine"
         C-u "HalfPageUp"
         C-d "HalfPageDown"

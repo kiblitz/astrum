@@ -4,8 +4,11 @@ use astrum::editor::Editor;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::load()?;
+    let (config, config_error) = Config::load();
     let mut editor = Editor::new(config)?;
+    if let Some(err) = config_error {
+        editor.set_config_error(err);
+    }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     for path in &args {

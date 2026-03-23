@@ -13,10 +13,27 @@
 - [ ] Marks (`ma`, `'a`)
 - [ ] Named registers
 - [x] Macros (`q`, `@`)
-- [ ] Comment toggle
+- [x] Comment toggle
 
 ## Tier 3 — Polish
-- [ ] More language grammars (TypeScript, Go, HTML/CSS, etc.)
+- [ ] More language grammars
+  - [x] Rust (`.rs`)
+  - [x] Python (`.py`, `.pyi`)
+  - [x] JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`)
+  - [x] JSON (`.json`)
+  - [x] TOML (`.toml`)
+  - [x] C (`.c`, `.h`)
+  - [x] C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh`)
+  - [ ] TypeScript (`.ts`, `.tsx`)
+  - [ ] Go (`.go`)
+  - [ ] HTML (`.html`)
+  - [ ] CSS (`.css`)
+  - [ ] Java (`.java`)
+  - [ ] Bash (`.sh`)
+  - [ ] Markdown (`.md`)
+  - [ ] YAML (`.yml`, `.yaml`)
+  - [ ] Zig (`.zig`)
+  - [ ] OCaml (`.ml`, `.mli`)
 - [ ] Line wrapping
 - [ ] Relative line numbers
 - [ ] Configurable themes

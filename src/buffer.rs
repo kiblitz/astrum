@@ -706,6 +706,79 @@ impl Buffer {
         self.cursor.line = line.min(self.line_count().saturating_sub(1));
         self.clamp_cursor();
     }
+
+    /// Toggle line comments on a range of lines. If all lines are commented,
+    /// uncomment them. Otherwise, comment all lines.
+    /// Returns None (caller should do full re-parse).
+    pub fn toggle_line_comment(&mut self, first_line: usize, last_line: usize, prefix: &str) {
+        let line_count = self.line_count();
+        let first = first_line.min(line_count.saturating_sub(1));
+        let last = last_line.min(line_count.saturating_sub(1));
+
+        // Check if all non-empty lines in the range are already commented.
+        let prefix_space = format!("{} ", prefix);
+        let all_commented = (first..=last).all(|ln| {
+            let line = self.rope.line(ln);
+            let trimmed: String = line.chars().collect::<String>();
+            let trimmed = trimmed.trim_start();
+            trimmed.is_empty() || trimmed.starts_with(&prefix_space) || trimmed.starts_with(prefix)
+        });
+
+        self.save_undo();
+
+        if all_commented {
+            // Uncomment: remove the comment prefix (and one trailing space if present).
+            for ln in (first..=last).rev() {
+                let line = self.rope.line(ln);
+                let text: String = line.chars().collect();
+                let trimmed = text.trim_start();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let indent_chars = text.chars().take_while(|c| c.is_whitespace()).count();
+                let line_start = self.rope.line_to_char(ln);
+                let prefix_chars = prefix.chars().count();
+                if trimmed.starts_with(&prefix_space) {
+                    let remove_start = line_start + indent_chars;
+                    let remove_end = remove_start + prefix_chars + 1; // prefix + space
+                    self.rope.remove(remove_start..remove_end);
+                } else if trimmed.starts_with(prefix) {
+                    let remove_start = line_start + indent_chars;
+                    let remove_end = remove_start + prefix_chars;
+                    self.rope.remove(remove_start..remove_end);
+                }
+            }
+        } else {
+            // Comment: find minimum indentation of non-empty lines, insert prefix there.
+            let min_indent = (first..=last)
+                .filter_map(|ln| {
+                    let line = self.rope.line(ln);
+                    let text: String = line.chars().collect();
+                    let trimmed = text.trim_start();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(text.chars().take_while(|c| c.is_whitespace()).count())
+                    }
+                })
+                .min()
+                .unwrap_or(0);
+
+            let insert_text = format!("{} ", prefix);
+            for ln in (first..=last).rev() {
+                let line = self.rope.line(ln);
+                let text: String = line.chars().collect();
+                if text.trim_start().is_empty() {
+                    continue; // Skip empty lines.
+                }
+                let line_start = self.rope.line_to_char(ln);
+                self.rope.insert(line_start + min_indent, &insert_text);
+            }
+        }
+
+        self.clamp_cursor();
+        self.mark_modified();
+    }
 }
 
 /// Whether a character is a "word" character (alphanumeric or underscore).

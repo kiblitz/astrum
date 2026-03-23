@@ -252,6 +252,10 @@ pub struct Editor {
     recording_macro: Option<(char, Vec<Action>)>,
     /// Last played macro register (for `@@`).
     last_macro_register: Option<char>,
+    /// File extension → comment syntax (from config).
+    comment_syntax: HashMap<String, crate::config::CommentSyntax>,
+    /// Config loading error to display on the welcome screen.
+    config_error: Option<String>,
 }
 
 /// Parsed `:s` or `:%s` substitute command.
@@ -380,6 +384,7 @@ impl Editor {
         let terminal = Terminal::new(backend)?;
 
         let input = InputHandler::new(config.keymap);
+        let comment_syntax = config.comment_syntax;
         let highlight_engine = HighlightEngine::new();
         let swap_manager = SwapManager::new();
 
@@ -408,7 +413,13 @@ impl Editor {
             macro_registers: HashMap::new(),
             recording_macro: None,
             last_macro_register: None,
+            comment_syntax,
+            config_error: None,
         })
+    }
+
+    pub fn set_config_error(&mut self, err: String) {
+        self.config_error = Some(err);
     }
 
     // -- Helper methods --
@@ -571,12 +582,13 @@ impl Editor {
                     (line, col, col + sc.pattern_char_len)
                 });
                 let rec_macro = self.recording_macro.as_ref().map(|(reg, _)| *reg);
+                let config_err = self.config_error.as_deref();
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
                         &pending_hints, hl_cache, file_browsers, palette, find_file,
                         search_state, search_buf, search_dir, visual_anchor, sub_hl,
-                        rec_macro,
+                        rec_macro, config_err,
                     );
                 })?;
             }
@@ -1237,6 +1249,42 @@ impl Editor {
             }
             Action::PlayMacro => {
                 self.enter_awaiting_char(AwaitingChar::MacroPlay { count }, "@");
+            }
+
+            Action::CommentToggle => {
+                // Look up comment prefix from active buffer's file extension.
+                let prefix = self.sync_buffer(|b| {
+                    b.path.as_ref().and_then(|p| {
+                        p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.to_string())
+                    })
+                }).flatten().and_then(|ext| {
+                    self.comment_syntax.get(&ext).and_then(|cs| cs.line.clone())
+                });
+
+                if let Some(prefix) = prefix {
+                    // Determine line range: visual selection or current line.
+                    let (first, last) = if let Some((anchor_line, _)) = self.visual_anchor {
+                        let cursor_line = self.pane_layout.active_pane().cursor.line;
+                        (anchor_line.min(cursor_line), anchor_line.max(cursor_line))
+                    } else {
+                        let line = self.pane_layout.active_pane().cursor.line;
+                        (line, line)
+                    };
+
+                    self.with_buffer_edit(|b| {
+                        b.toggle_line_comment(first, last, &prefix);
+                        None
+                    });
+                    self.rehighlight_active();
+
+                    if self.visual_anchor.is_some() {
+                        self.exit_visual_mode();
+                    }
+                } else {
+                    self.status_message = "No comment syntax for this file type".to_string();
+                }
             }
 
             Action::Noop => {}

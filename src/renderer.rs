@@ -39,6 +39,7 @@ impl Renderer {
         visual_anchor: Option<(usize, usize)>,
         substitute_highlight: Option<(usize, usize, usize)>,
         recording_macro: Option<char>,
+        config_error: Option<&str>,
     ) {
         let size = frame.area();
         let has_overlay = find_file.is_some() || palette.is_some();
@@ -79,7 +80,7 @@ impl Renderer {
         let active_fb = file_browsers.get(&pane_layout.active_id);
         if !buffers.is_empty() || !pane_layout.is_single() {
             let show_cursor = !has_overlay;
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight);
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
             // Status line
             if let Some(fb) = active_fb {
                 self.render_file_browser_status(frame, chunks[2], fb);
@@ -96,7 +97,7 @@ impl Renderer {
             self.render_file_browser(frame, chunks[1], fb);
             self.render_file_browser_status(frame, chunks[2], fb);
         } else {
-            self.render_welcome(frame, chunks[1]);
+            self.render_welcome(frame, chunks[1], config_error);
             self.render_welcome_status(frame, chunks[2]);
         }
 
@@ -165,6 +166,7 @@ impl Renderer {
         mode: &Mode,
         visual_anchor: Option<(usize, usize)>,
         substitute_highlight: Option<(usize, usize, usize)>,
+        config_error: Option<&str>,
     ) {
         match node {
             LayoutNode::Leaf(pane_id) => {
@@ -203,7 +205,7 @@ impl Renderer {
                         let pane_sub_hl = if is_active { substitute_highlight } else { None };
                         self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state), pane_visual, pane_sub_hl);
                     } else {
-                        self.render_welcome(frame, content_area);
+                        self.render_welcome(frame, content_area, config_error);
                     }
 
                     // Per-pane indicator when splits exist
@@ -253,7 +255,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -287,7 +289,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
                             y_offset += h;
 
                             if i + 1 < children.len() {
@@ -329,8 +331,8 @@ impl Renderer {
 
     // -- Welcome screen --
 
-    fn render_welcome(&self, frame: &mut Frame, area: Rect) {
-        let lines = vec![
+    fn render_welcome(&self, frame: &mut Frame, area: Rect, config_error: Option<&str>) {
+        let mut lines = vec![
             Line::from(""),
             Line::from(""),
             Line::from(""),
@@ -375,6 +377,18 @@ impl Renderer {
                 Style::default().fg(Color::DarkGray),
             )),
         ];
+
+        if let Some(err) = config_error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", err),
+                Style::default().fg(Color::Red),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Using default configuration",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
 
         let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
         frame.render_widget(paragraph, area);
