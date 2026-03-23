@@ -167,7 +167,7 @@ impl Buffer {
             self.rope = entry.rope_snapshot;
             self.cursor = entry.cursor;
             self.modified = true;
-        self.invalidate_hash();
+            self.invalidate_hash();
         }
     }
 
@@ -180,7 +180,7 @@ impl Buffer {
             self.rope = entry.rope_snapshot;
             self.cursor = entry.cursor;
             self.modified = true;
-        self.invalidate_hash();
+            self.invalidate_hash();
         }
     }
 
@@ -392,25 +392,35 @@ impl Buffer {
         self.clamp_cursor();
     }
 
-    pub fn move_word_forward(&mut self) {
+    pub fn move_word_forward(&mut self) { self.move_word_forward_impl(false); }
+    pub fn move_big_word_forward(&mut self) { self.move_word_forward_impl(true); }
+
+    pub fn move_word_end(&mut self) { self.move_word_end_impl(false); }
+    pub fn move_big_word_end(&mut self) { self.move_word_end_impl(true); }
+
+    pub fn move_word_backward(&mut self) { self.move_word_backward_impl(false); }
+    pub fn move_big_word_backward(&mut self) { self.move_word_backward_impl(true); }
+
+    /// Move to start of next word. `big` = true treats all non-whitespace as one class.
+    fn move_word_forward_impl(&mut self, big: bool) {
         let line_count = self.line_count();
         let mut line = self.cursor.line;
         let mut col = self.cursor.col;
 
-        // On the current line: skip past current word/punctuation class, then whitespace.
+        // On the current line: skip past current class, then whitespace.
         if line < line_count {
             let rope_line = self.rope.line(line);
             let line_len = line_len_no_newline(&rope_line);
 
             if col < line_len {
-                let cls = char_class(rope_line.char(col));
-                if cls != CharClass::Whitespace {
-                    while col < line_len && char_class(rope_line.char(col)) == cls {
+                let start = rope_line.char(col);
+                if !start.is_whitespace() {
+                    while col < line_len && same_word_class(rope_line.char(col), start, big) {
                         col += 1;
                     }
                 }
             }
-            while col < line_len && char_class(rope_line.char(col)) == CharClass::Whitespace {
+            while col < line_len && rope_line.char(col).is_whitespace() {
                 col += 1;
             }
 
@@ -421,15 +431,14 @@ impl Buffer {
             }
         }
 
-        // Crossed end of current line — find first non-blank char on subsequent lines.
+        // Crossed end of current line — find first non-blank on subsequent lines.
         line += 1;
         while line < line_count {
             let rope_line = self.rope.line(line);
             let line_len = line_len_no_newline(&rope_line);
 
-            // Skip leading whitespace.
             let mut c = 0;
-            while c < line_len && char_class(rope_line.char(c)) == CharClass::Whitespace {
+            while c < line_len && rope_line.char(c).is_whitespace() {
                 c += 1;
             }
             if c < line_len {
@@ -440,7 +449,7 @@ impl Buffer {
             line += 1;
         }
 
-        // No next word found — move to last character of file (vim behavior).
+        // No next word — move to last character of file (vim behavior).
         let last_line = line_count.saturating_sub(1);
         let rope_line = self.rope.line(last_line);
         let last_col = line_len_no_newline(&rope_line).saturating_sub(1);
@@ -448,56 +457,44 @@ impl Buffer {
         self.cursor.col = last_col;
     }
 
-    pub fn move_word_end(&mut self) {
+    /// Move to end of current/next word. `big` = true treats all non-whitespace as one class.
+    fn move_word_end_impl(&mut self, big: bool) {
         let line_count = self.line_count();
         let mut line = self.cursor.line;
         let mut col = self.cursor.col + 1; // Move past current position.
 
-        // On the current line: skip whitespace, then advance to end of char class.
-        if line < line_count {
+        // Scan forward: skip whitespace, then advance to end of class.
+        // Tries current line first, then subsequent lines.
+        loop {
+            if line >= line_count {
+                break;
+            }
             let rope_line = self.rope.line(line);
             let line_len = line_len_no_newline(&rope_line);
 
-            while col < line_len && char_class(rope_line.char(col)) == CharClass::Whitespace {
+            while col < line_len && rope_line.char(col).is_whitespace() {
                 col += 1;
             }
             if col < line_len {
-                let cls = char_class(rope_line.char(col));
-                while col + 1 < line_len && char_class(rope_line.char(col + 1)) == cls {
+                let start = rope_line.char(col);
+                while col + 1 < line_len
+                    && same_word_class(rope_line.char(col + 1), start, big)
+                {
                     col += 1;
                 }
                 self.cursor.line = line;
                 self.cursor.col = col;
                 return;
             }
-        }
 
-        // Crossed end of current line — find next word end on subsequent lines.
-        line += 1;
-        while line < line_count {
-            let rope_line = self.rope.line(line);
-            let line_len = line_len_no_newline(&rope_line);
-
-            let mut c = 0;
-            while c < line_len && char_class(rope_line.char(c)) == CharClass::Whitespace {
-                c += 1;
-            }
-            if c < line_len {
-                let cls = char_class(rope_line.char(c));
-                while c + 1 < line_len && char_class(rope_line.char(c + 1)) == cls {
-                    c += 1;
-                }
-                self.cursor.line = line;
-                self.cursor.col = c;
-                return;
-            }
             line += 1;
+            col = 0;
         }
-
         // No next word found — stay put.
     }
 
-    pub fn move_word_backward(&mut self) {
+    /// Move to start of previous word. `big` = true treats all non-whitespace as one class.
+    fn move_word_backward_impl(&mut self, big: bool) {
         let mut line = self.cursor.line;
         let mut col = self.cursor.col;
 
@@ -505,13 +502,13 @@ impl Buffer {
             if col > 0 {
                 let rope_line = self.rope.line(line);
                 // Skip whitespace backward.
-                while col > 0 && char_class(rope_line.char(col - 1)) == CharClass::Whitespace {
+                while col > 0 && rope_line.char(col - 1).is_whitespace() {
                     col -= 1;
                 }
-                // Skip current char class backward.
+                // Skip current class backward.
                 if col > 0 {
-                    let cls = char_class(rope_line.char(col - 1));
-                    while col > 0 && char_class(rope_line.char(col - 1)) == cls {
+                    let start = rope_line.char(col - 1);
+                    while col > 0 && same_word_class(rope_line.char(col - 1), start, big) {
                         col -= 1;
                     }
                     self.cursor.line = line;
@@ -520,116 +517,6 @@ impl Buffer {
                 }
             }
             // At start of line — move to end of previous line.
-            if line == 0 {
-                self.cursor.col = 0;
-                return;
-            }
-            line -= 1;
-            col = line_len_no_newline(&self.rope.line(line));
-        }
-    }
-
-    /// Move to start of next WORD (whitespace-delimited).
-    pub fn move_big_word_forward(&mut self) {
-        let line_count = self.line_count();
-        let mut line = self.cursor.line;
-        let mut col = self.cursor.col;
-
-        // On the current line: skip non-whitespace, then whitespace.
-        if line < line_count {
-            let rope_line = self.rope.line(line);
-            let line_len = line_len_no_newline(&rope_line);
-
-            while col < line_len && !rope_line.char(col).is_whitespace() { col += 1; }
-            while col < line_len && rope_line.char(col).is_whitespace() { col += 1; }
-
-            if col < line_len {
-                self.cursor.line = line;
-                self.cursor.col = col;
-                return;
-            }
-        }
-
-        // Crossed end of current line — find first non-blank char on subsequent lines.
-        line += 1;
-        while line < line_count {
-            let rope_line = self.rope.line(line);
-            let line_len = line_len_no_newline(&rope_line);
-
-            let mut c = 0;
-            while c < line_len && rope_line.char(c).is_whitespace() { c += 1; }
-            if c < line_len {
-                self.cursor.line = line;
-                self.cursor.col = c;
-                return;
-            }
-            line += 1;
-        }
-
-        // No next word found — move to last character of file.
-        let last_line = line_count.saturating_sub(1);
-        let rope_line = self.rope.line(last_line);
-        let last_col = line_len_no_newline(&rope_line).saturating_sub(1);
-        self.cursor.line = last_line;
-        self.cursor.col = last_col;
-    }
-
-    /// Move to end of current/next WORD (whitespace-delimited).
-    pub fn move_big_word_end(&mut self) {
-        let line_count = self.line_count();
-        let mut line = self.cursor.line;
-        let mut col = self.cursor.col + 1;
-
-        // On the current line: skip whitespace, then advance to end of WORD.
-        if line < line_count {
-            let rope_line = self.rope.line(line);
-            let line_len = line_len_no_newline(&rope_line);
-
-            while col < line_len && rope_line.char(col).is_whitespace() { col += 1; }
-            if col < line_len {
-                while col + 1 < line_len && !rope_line.char(col + 1).is_whitespace() { col += 1; }
-                self.cursor.line = line;
-                self.cursor.col = col;
-                return;
-            }
-        }
-
-        // Crossed end of current line — find next WORD end on subsequent lines.
-        line += 1;
-        while line < line_count {
-            let rope_line = self.rope.line(line);
-            let line_len = line_len_no_newline(&rope_line);
-
-            let mut c = 0;
-            while c < line_len && rope_line.char(c).is_whitespace() { c += 1; }
-            if c < line_len {
-                while c + 1 < line_len && !rope_line.char(c + 1).is_whitespace() { c += 1; }
-                self.cursor.line = line;
-                self.cursor.col = c;
-                return;
-            }
-            line += 1;
-        }
-
-        // No next word found — stay put.
-    }
-
-    /// Move to start of previous WORD (whitespace-delimited).
-    pub fn move_big_word_backward(&mut self) {
-        let mut line = self.cursor.line;
-        let mut col = self.cursor.col;
-
-        loop {
-            if col > 0 {
-                let rope_line = self.rope.line(line);
-                while col > 0 && rope_line.char(col - 1).is_whitespace() { col -= 1; }
-                if col > 0 {
-                    while col > 0 && !rope_line.char(col - 1).is_whitespace() { col -= 1; }
-                    self.cursor.line = line;
-                    self.cursor.col = col;
-                    return;
-                }
-            }
             if line == 0 {
                 self.cursor.col = 0;
                 return;
@@ -653,7 +540,7 @@ impl Buffer {
         self.cursor.line += 1;
         self.cursor.col = 0;
         self.mark_modified();
-        Some(self.edit_info_insert(insert_at, insert_at + text.len()))
+        Some(self.edit_info_insert(insert_at, insert_at + text.chars().count()))
     }
 
     pub fn insert_line_above(&mut self) -> Option<EditInfo> {
@@ -759,13 +646,14 @@ impl Buffer {
             let insert_at = (line_start + insert_col).min(self.rope.len_chars());
             self.rope.insert(insert_at, text);
             // Place cursor at end of inserted text.
+            let char_count = text.chars().count();
             let newlines = text.chars().filter(|c| *c == '\n').count();
             if newlines > 0 {
                 self.cursor.line += newlines;
-                let last_nl = text.rfind('\n').unwrap();
-                self.cursor.col = text.len() - last_nl - 2;
+                let after_last_nl = text.chars().rev().take_while(|c| *c != '\n').count();
+                self.cursor.col = after_last_nl.saturating_sub(1);
             } else {
-                self.cursor.col = insert_col + text.len() - 1;
+                self.cursor.col = insert_col + char_count - 1;
             }
             self.clamp_cursor();
         }
@@ -840,6 +728,16 @@ fn char_class(c: char) -> CharClass {
         CharClass::Whitespace
     } else {
         CharClass::Punctuation
+    }
+}
+
+/// Are two characters in the same word class?
+/// `big` = true uses WORD semantics (all non-whitespace is one class).
+fn same_word_class(a: char, b: char, big: bool) -> bool {
+    if big {
+        !a.is_whitespace() && !b.is_whitespace()
+    } else {
+        char_class(a) == char_class(b)
     }
 }
 

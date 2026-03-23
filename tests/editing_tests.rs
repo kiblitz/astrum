@@ -467,3 +467,108 @@ fn modified_after_delete() {
     b.delete_char_backward();
     assert!(b.modified);
 }
+
+// -- paste with multi-byte characters --
+
+#[test]
+fn paste_after_multibyte_inline() {
+    let mut b = buf("ab", 0, 0);
+    b.paste_after("你好");
+    // "你好" is 2 chars, inserted after col 0 → "a你好b"
+    // Cursor should be at col 2 (end of inserted text: insert_col=1, +2 chars -1 = 2)
+    check(&state(&b), expect![[r#"(0,2) "a你好b""#]]);
+}
+
+#[test]
+fn paste_after_multibyte_with_newline() {
+    let mut b = buf("ab", 0, 0);
+    b.paste_after("你\n好");
+    // Inserted after col 0: "a你\n好b"
+    // Cursor should land on line 1, col 0 (one char "好" after last \n, minus 1)
+    check(&state(&b), expect![[r#"(1,0) "a你\n好b""#]]);
+}
+
+#[test]
+fn paste_before_multibyte_inline() {
+    let mut b = buf("ab", 0, 1);
+    b.paste_before("你好");
+    check(&state(&b), expect![[r#"(0,1) "a你好b""#]]);
+}
+
+// -- cc (linewise change) undo atomicity --
+
+#[test]
+fn linewise_change_single_undo() {
+    // Simulate what cc does: delete lines and insert blank line.
+    // This tests that the buffer operations can be composed atomically.
+    let mut b = buf("aaa\nbbb\nccc\n", 0, 0);
+    // Atomic: save_undo once, delete line range, insert blank line.
+    b.save_undo();
+    let (start, end) = b.linewise_range(0, 1); // lines 0-1
+    b.rope.remove(start..end);
+    let pos = start.min(b.rope.len_chars());
+    b.rope.insert_char(pos, '\n');
+    b.cursor.line = b.rope.char_to_line(pos);
+    b.cursor.col = 0;
+    check(&state(&b), expect![[r#"(0,0) "\nccc\n""#]]);
+    // Single undo should restore everything.
+    b.undo();
+    check(&state(&b), expect![[r#"(0,0) "aaa\nbbb\nccc\n""#]]);
+}
+
+#[test]
+fn linewise_change_single_line() {
+    let mut b = buf("hello\nworld\n", 0, 0);
+    b.save_undo();
+    let (start, end) = b.linewise_range(0, 0);
+    b.rope.remove(start..end);
+    let pos = start.min(b.rope.len_chars());
+    b.rope.insert_char(pos, '\n');
+    b.cursor.line = b.rope.char_to_line(pos);
+    b.cursor.col = 0;
+    check(&state(&b), expect![[r#"(0,0) "\nworld\n""#]]);
+    b.undo();
+    check(&state(&b), expect![[r#"(0,0) "hello\nworld\n""#]]);
+}
+
+// -- paste linewise --
+
+#[test]
+fn paste_after_linewise_last_line_no_newline() {
+    let mut b = buf("aaa", 0, 0);
+    b.paste_after("bbb\n");
+    check(&state(&b), expect![[r#"(1,0) "aaa\nbbb\n""#]]);
+}
+
+#[test]
+fn paste_before_linewise_multibyte() {
+    let mut b = buf("bbb\n", 0, 0);
+    b.paste_before("aaa\n");
+    check(&state(&b), expect![[r#"(0,0) "aaa\nbbb\n""#]]);
+}
+
+// -- char_idx_at with multi-byte --
+
+#[test]
+fn char_idx_at_multibyte() {
+    let b = buf("你好世界", 0, 0);
+    // Each char is 1 char index, not 3 bytes
+    check(&b.char_idx_at(0, 2).to_string(), expect!["2"]);
+}
+
+// -- text_in_char_range with multi-byte --
+
+#[test]
+fn text_in_char_range_multibyte() {
+    let b = buf("你好世界", 0, 0);
+    check(&b.text_in_char_range(1, 3), expect!["好世"]);
+}
+
+// -- delete_char_range with multi-byte --
+
+#[test]
+fn delete_char_range_multibyte() {
+    let mut b = buf("你好世界", 0, 0);
+    b.delete_char_range(1, 3);
+    check(&state(&b), expect![[r#"(0,1) "你界""#]]);
+}

@@ -2414,10 +2414,29 @@ impl Editor {
                 }
             }
             Action::OperatorChange => {
-                for _ in 0..count {
-                    self.with_buffer_edit(|b| b.delete_line());
+                // Yank the lines being changed (consistent with dd).
+                let range = self.sync_buffer(|b| {
+                    let last = (b.cursor.line + count - 1).min(b.line_count().saturating_sub(1));
+                    b.linewise_range(b.cursor.line, last)
+                });
+                if let Some((start, end)) = range {
+                    self.yank_range(start, end);
+                    // Single undo entry: delete range and insert blank line atomically.
+                    self.with_buffer_edit(|b| {
+                        b.save_undo();
+                        let end = end.min(b.rope.len_chars());
+                        if start < end {
+                            b.rope.remove(start..end);
+                        }
+                        let pos = start.min(b.rope.len_chars());
+                        b.rope.insert_char(pos, '\n');
+                        b.cursor.line = b.rope.char_to_line(pos);
+                        b.cursor.col = 0;
+                        b.mark_modified();
+                        None
+                    });
+                    self.rehighlight_active();
                 }
-                self.with_buffer_edit(|b| b.insert_line_above());
                 self.input.mode = Mode::Insert;
             }
             Action::OperatorYank => {
@@ -2525,6 +2544,7 @@ impl Editor {
             }
             Action::OperatorChange => {
                 self.with_buffer(|b| { b.cursor.line = orig_line; b.cursor.col = orig_col; });
+                self.yank_range(start, end);
                 self.with_buffer_edit(|b| b.delete_char_range(start, end));
                 self.rehighlight_active();
                 self.input.mode = Mode::Insert;
@@ -2536,11 +2556,15 @@ impl Editor {
                     b.cursor.line = orig_line;
                     b.cursor.col = orig_col;
                 });
-                let chars = end - start;
                 self.status_message = if linewise {
-                    format!("{} lines yanked", chars.max(1))
+                    let line_count = self.sync_buffer(|b| {
+                        let sl = b.rope.char_to_line(start);
+                        let el = b.rope.char_to_line(end.saturating_sub(1).max(start));
+                        el - sl + 1
+                    }).unwrap_or(1);
+                    format!("{} lines yanked", line_count)
                 } else {
-                    format!("{} chars yanked", chars)
+                    format!("{} chars yanked", end - start)
                 };
             }
             _ => {}
