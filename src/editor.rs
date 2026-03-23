@@ -2110,6 +2110,7 @@ impl Editor {
                 self.rehighlight_active();
             }
             VisualOp::Change => {
+                self.yank_range(start, end);
                 self.with_buffer_edit(|b| b.delete_char_range(start, end));
                 self.rehighlight_active();
                 self.input.mode = Mode::Insert;
