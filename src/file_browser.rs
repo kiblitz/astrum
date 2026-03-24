@@ -219,8 +219,12 @@ impl FileBrowser {
                 FileBrowserResult::Noop
             }
             KeyCode::Backspace => {
-                self.filter.pop();
-                self.refilter();
+                if self.filter.is_empty() {
+                    self.input_mode = BrowserInputMode::Navigate;
+                } else {
+                    self.filter.pop();
+                    self.refilter();
+                }
                 FileBrowserResult::Noop
             }
             KeyCode::Char(c) => {
