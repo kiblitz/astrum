@@ -16,7 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::collections::HashMap;
 use std::io::{self, Stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 enum VisualOp { Delete, Change, Yank }
 
@@ -83,6 +83,57 @@ impl PaletteState {
             .get(self.selected)
             .and_then(|&idx| self.items.get(idx))
             .map(|item| item.action.clone())
+    }
+}
+
+/// State for the recent files picker (SPC b b).
+pub struct RecentPickerState {
+    pub query: String,
+    /// All recent paths (most recent first), with display names.
+    pub items: Vec<RecentItem>,
+    pub filtered: Vec<usize>,
+    pub selected: usize,
+}
+
+pub struct RecentItem {
+    pub path: PathBuf,
+    pub display: String,
+    pub is_dir: bool,
+}
+
+impl RecentPickerState {
+    fn new(items: Vec<RecentItem>) -> Self {
+        let filtered: Vec<usize> = (0..items.len()).collect();
+        Self {
+            query: String::new(),
+            items,
+            filtered,
+            selected: 0,
+        }
+    }
+
+    fn refilter(&mut self) {
+        if self.query.is_empty() {
+            self.filtered = (0..self.items.len()).collect();
+        } else {
+            let lower = self.query.to_lowercase();
+            self.filtered = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.display.to_lowercase().contains(&lower))
+                .map(|(i, _)| i)
+                .collect();
+        }
+        if self.selected >= self.filtered.len() {
+            self.selected = self.filtered.len().saturating_sub(1);
+        }
+    }
+
+    fn selected_item(&self) -> Option<&RecentItem> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|&idx| self.items.get(idx))
     }
 }
 
@@ -256,6 +307,10 @@ pub struct Editor {
     comment_syntax: HashMap<String, crate::config::CommentSyntax>,
     /// Config loading error to display on the welcome screen.
     config_error: Option<String>,
+    /// Recently opened files and folders (most recent first).
+    recent_paths: Vec<PathBuf>,
+    /// Recent files picker overlay.
+    recent_picker: Option<RecentPickerState>,
 }
 
 /// Parsed `:s` or `:%s` substitute command.
@@ -344,6 +399,16 @@ pub fn find_all_matches_in_rope(rope: &ropey::Rope, pattern: &str) -> Vec<(usize
     matches
 }
 
+/// Strip Windows `\\?\` UNC prefix from canonical paths.
+fn strip_unc_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 fn apply_motion(b: &mut Buffer, action: &Action, viewport_height: usize) {
     match action {
         Action::MoveUp => b.move_up(),
@@ -415,11 +480,22 @@ impl Editor {
             last_macro_register: None,
             comment_syntax,
             config_error: None,
+            recent_paths: Vec::new(),
+            recent_picker: None,
         })
     }
 
     pub fn set_config_error(&mut self, err: String) {
         self.config_error = Some(err);
+    }
+
+    /// Record a path as recently opened (most recent first, deduplicated).
+    fn push_recent(&mut self, path: PathBuf) {
+        let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+        let clean = strip_unc_prefix(&canonical);
+        self.recent_paths.retain(|p| p != &clean);
+        self.recent_paths.insert(0, clean);
+        self.recent_paths.truncate(100);
     }
 
     // -- Helper methods --
@@ -447,6 +523,7 @@ impl Editor {
     /// switch to it instead of creating a duplicate.
     pub async fn open_file(&mut self, path: &str) -> Result<()> {
         let path_buf = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        self.push_recent(path_buf.clone());
 
         // Reuse existing buffer for this path.
         if let Some(existing) = self.buffers.iter().find(|b| {
@@ -506,6 +583,7 @@ impl Editor {
     }
 
     async fn open_file_browser(&mut self, dir: PathBuf) -> Result<()> {
+        self.push_recent(dir.clone());
         let mut fb = FileBrowser::new(dir.clone());
 
         let entries =
@@ -583,12 +661,13 @@ impl Editor {
                 });
                 let rec_macro = self.recording_macro.as_ref().map(|(reg, _)| *reg);
                 let config_err = self.config_error.as_deref();
+                let recent_picker = &self.recent_picker;
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
                         &pending_hints, hl_cache, file_browsers, palette, find_file,
                         search_state, search_buf, search_dir, visual_anchor, sub_hl,
-                        rec_macro, config_err,
+                        rec_macro, config_err, recent_picker,
                     );
                 })?;
             }
@@ -622,6 +701,10 @@ impl Editor {
                                 }
                                 if self.find_file.is_some() {
                                     self.handle_find_file_key(key).await?;
+                                    continue;
+                                }
+                                if self.recent_picker.is_some() {
+                                    self.handle_recent_picker_key(key).await?;
                                     continue;
                                 }
                                 if self.palette.is_some() {
@@ -659,8 +742,15 @@ impl Editor {
                                 }
                             }
                             Event::Mouse(mouse) => {
-                                if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-                                    self.handle_mouse_click(mouse.column, mouse.row).await?;
+                                // Suppress mouse events when any overlay is open.
+                                let has_overlay = self.substitute_confirm.is_some()
+                                    || self.find_file.is_some()
+                                    || self.recent_picker.is_some()
+                                    || self.palette.is_some();
+                                if !has_overlay {
+                                    if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                                        self.handle_mouse_click(mouse.column, mouse.row).await?;
+                                    }
                                 }
                             }
                             Event::Resize(_, _) => {}
@@ -782,6 +872,10 @@ impl Editor {
                 if let Some((dir, sel, scroll)) = old_state {
                     self.push_browser_jump(dir, sel, scroll);
                 }
+                // Track directory navigation in recent paths.
+                if let Some(fb) = self.file_browsers.get(&pane_id) {
+                    self.push_recent(fb.current_dir.clone());
+                }
                 self.scan_current_browser_dir().await?;
             }
             FileBrowserResult::PassThrough => {
@@ -800,7 +894,6 @@ impl Editor {
         if action == Action::Noop {
             return Ok(());
         }
-
         // Consume count prefix from the input handler.
         let count = self.input.count_prefix.take().unwrap_or(1);
 
@@ -1081,6 +1174,25 @@ impl Editor {
             }
 
             // Buffer management
+            Action::OpenRecentPicker => {
+                if self.recent_picker.is_none() {
+                    let cwd = std::env::current_dir().ok();
+                    let items: Vec<RecentItem> = self.recent_paths.iter().map(|p| {
+                        let is_dir = p.is_dir();
+                        // Show relative path when under CWD, otherwise absolute.
+                        let display = cwd.as_ref()
+                            .and_then(|cwd| p.strip_prefix(cwd).ok())
+                            .map(|rel| {
+                                let s = rel.display().to_string();
+                                if s.is_empty() { ".".to_string() } else { s }
+                            })
+                            .unwrap_or_else(|| p.display().to_string());
+                        RecentItem { path: p.clone(), display, is_dir }
+                    }).collect();
+                    self.recent_picker = Some(RecentPickerState::new(items));
+                    execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+                }
+            }
             Action::NextBuffer => {
                 self.switch_buffer_by_offset(1);
             }
@@ -1692,6 +1804,68 @@ impl Editor {
                 if let Some(ref mut palette) = self.palette {
                     palette.query.push(c);
                     palette.refilter();
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_recent_picker_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Result<()> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Esc => {
+                self.recent_picker = None;
+                execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+            }
+            KeyCode::Enter => {
+                let selected = self.recent_picker.as_ref()
+                    .and_then(|rp| rp.selected_item())
+                    .map(|item| (item.path.clone(), item.is_dir));
+
+                self.recent_picker = None;
+                execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+
+                if let Some((path, is_dir)) = selected {
+                    // Clear file browser on this pane before switching content.
+                    let pane_id = self.pane_layout.active_id;
+                    self.file_browsers.remove(&pane_id);
+                    self.push_jump();
+                    if is_dir {
+                        self.open_file_browser(path).await?;
+                    } else {
+                        self.open_file(path.to_string_lossy().as_ref()).await?;
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
+                if let Some(ref mut rp) = self.recent_picker {
+                    rp.selected = rp.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
+                if let Some(ref mut rp) = self.recent_picker {
+                    if rp.selected + 1 < rp.filtered.len() {
+                        rp.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut rp) = self.recent_picker {
+                    rp.query.pop();
+                    rp.refilter();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(ref mut rp) = self.recent_picker {
+                    rp.query.push(c);
+                    rp.refilter();
                 }
             }
             _ => {}

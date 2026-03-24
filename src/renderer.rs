@@ -1,6 +1,6 @@
 use crate::action::SearchDirection;
 use crate::buffer::{Buffer, Cursor};
-use crate::editor::{FindFileState, PaletteState, SearchState};
+use crate::editor::{FindFileState, PaletteState, RecentPickerState, SearchState};
 use crate::file_browser::{format_size, BrowserInputMode, FileBrowser};
 use crate::input::Mode;
 use crate::pane::{LayoutNode, PaneLayout, SplitDirection};
@@ -40,9 +40,10 @@ impl Renderer {
         substitute_highlight: Option<(usize, usize, usize)>,
         recording_macro: Option<char>,
         config_error: Option<&str>,
+        recent_picker: &Option<RecentPickerState>,
     ) {
         let size = frame.area();
-        let has_overlay = find_file.is_some() || palette.is_some();
+        let has_overlay = find_file.is_some() || palette.is_some() || recent_picker.is_some();
 
         // Compute active_buf_idx from pane_layout
         let active_buf_idx = pane_layout
@@ -121,6 +122,9 @@ impl Renderer {
         }
         if let Some(palette) = palette {
             self.render_palette(frame, size, palette);
+        }
+        if let Some(rp) = recent_picker {
+            self.render_recent_picker(frame, size, rp);
         }
 
         // Cursor positioning: only set cursor when it should be visible.
@@ -1099,6 +1103,91 @@ impl Renderer {
                 ),
             ]);
             lines.push(line);
+        }
+
+        frame.render_widget(Paragraph::new(lines), list_area);
+    }
+
+    fn render_recent_picker(&self, frame: &mut Frame, area: Rect, rp: &RecentPickerState) {
+        let width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
+        let max_height = (area.height * 7 / 10).max(10).min(area.height.saturating_sub(2));
+        let x = (area.width.saturating_sub(width)) / 2;
+        let y = (area.height.saturating_sub(max_height)) / 2;
+        let popup_area = Rect::new(x, y, width, max_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Recent Files ")
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        if inner.height < 2 || inner.width < 4 {
+            return;
+        }
+
+        // Query input line.
+        let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+        let prompt = format!("> {}", rp.query);
+        let avail = inner.width as usize;
+        let padded_input = if prompt.len() < avail {
+            format!("{}{}", prompt, " ".repeat(avail - prompt.len()))
+        } else {
+            prompt[..avail].to_string()
+        };
+        let input_line = Line::from(vec![
+            Span::styled(&padded_input[..2.min(padded_input.len())], Style::default().fg(Color::Cyan)),
+            Span::raw(&padded_input[2.min(padded_input.len())..]),
+        ]);
+        frame.render_widget(Paragraph::new(input_line), input_area);
+
+        // List of recent items.
+        let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height.saturating_sub(1));
+        let visible_count = list_area.height as usize;
+
+        let scroll_offset = if rp.selected >= visible_count {
+            rp.selected - visible_count + 1
+        } else {
+            0
+        };
+
+        let mut lines = Vec::new();
+        for (i, &item_idx) in rp.filtered.iter().skip(scroll_offset).take(visible_count).enumerate() {
+            let item = &rp.items[item_idx];
+            let is_selected = i + scroll_offset == rp.selected;
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+
+            let icon = if item.is_dir { "/" } else { "" };
+            let name = format!("{}{}", item.display, icon);
+
+            let available = list_area.width as usize;
+            let padded = if name.len() < available {
+                format!("{}{}", name, " ".repeat(available - name.len()))
+            } else {
+                name[..available].to_string()
+            };
+
+            lines.push(Line::from(Span::styled(padded, style)));
+        }
+
+        if rp.filtered.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  No recent files",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            )));
+        }
+
+        // Fill remaining rows with blanks to prevent bleed-through.
+        let blank = " ".repeat(list_area.width as usize);
+        while lines.len() < visible_count {
+            lines.push(Line::from(Span::raw(&blank)));
         }
 
         frame.render_widget(Paragraph::new(lines), list_area);

@@ -351,6 +351,7 @@ fn default_keymap() -> Keymap {
         ("P", Action::PasteBefore),
         ("space f f", Action::OpenFileBrowser),
         ("space f s", Action::SaveBuffer),
+        ("space b b", Action::OpenRecentPicker),
         ("space b n", Action::NextBuffer),
         ("space b p", Action::PrevBuffer),
         ("space b d", Action::CloseBuffer),
@@ -458,6 +459,7 @@ fn default_keymap() -> Keymap {
         ("~", Action::BrowserHome),
         ("space f f", Action::OpenFileBrowser),
         ("space f s", Action::SaveBuffer),
+        ("space b b", Action::OpenRecentPicker),
         ("space b n", Action::NextBuffer),
         ("space b p", Action::PrevBuffer),
         ("space b d", Action::CloseBuffer),
@@ -595,6 +597,7 @@ keymap {
                 s "SaveBuffer"
             }
             b {
+                b "OpenRecentPicker"
                 n "NextBuffer"
                 p "PrevBuffer"
                 d "CloseBuffer"
@@ -710,6 +713,7 @@ keymap {
                 s "SaveBuffer"
             }
             b {
+                b "OpenRecentPicker"
                 n "NextBuffer"
                 p "PrevBuffer"
                 d "CloseBuffer"

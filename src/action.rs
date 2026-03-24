@@ -96,6 +96,7 @@ pub enum Action {
     PrevBuffer,
     CloseBuffer,
     SaveBuffer,
+    OpenRecentPicker,
 
     // -- Window management --
     SplitVertical,
@@ -219,6 +220,7 @@ const ACTION_TABLE: &[(&str, &str, Action)] = &[
     ("PrevBuffer", "Previous buffer", Action::PrevBuffer),
     ("CloseBuffer", "Close buffer", Action::CloseBuffer),
     ("SaveBuffer", "Save buffer", Action::SaveBuffer),
+    ("OpenRecentPicker", "Recent files", Action::OpenRecentPicker),
     // Window management
     ("SplitVertical", "Split vertical", Action::SplitVertical),
     ("SplitHorizontal", "Split horizontal", Action::SplitHorizontal),
