@@ -1,5 +1,5 @@
 use super::helpers::*;
-use astrum::pane::SplitDirection;
+use astrum::pane::{FocusDirection, SplitDirection};
 use expect_test::expect;
 
 #[test]
@@ -396,5 +396,146 @@ fn three_horizontal_splits() {
           ~
          b.rs
          NORMAL  a.rs                                           1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn move_bottom_pane_right_in_horizontal_split() {
+    // Layout: Horizontal { [Vertical { [top-left, top-right] }, bottom] }
+    // Move bottom pane right → expected: bottom pane becomes rightmost vertical pane
+    // i.e. Vertical { [Horizontal-or-single { top-left, top-right }, bottom] }
+    //
+    // The bug: bottom pane ends up between top-left and top-right instead of
+    // at the far right of the layout.
+    let buf1 = make_buffer("TL\n", "tl.rs");
+    let buf2 = make_buffer("TR\n", "tr.rs");
+    let buf3 = make_buffer("BOT\n", "bot.rs");
+    let buf2_id = buf2.id;
+    let buf3_id = buf3.id;
+    let mut state = RenderState::default()
+        .with_buffer(buf1)
+        .with_extra_buffer(buf2)
+        .with_extra_buffer(buf3);
+    // Split active pane horizontally: top and bottom
+    let p2 = state.pane_layout.split(SplitDirection::Horizontal);
+    if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
+        pane.buffer_id = Some(buf3_id);
+    }
+    // Split top pane vertically: top-left and top-right
+    let p3 = state.pane_layout.split(SplitDirection::Vertical);
+    if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
+        pane.buffer_id = Some(buf2_id);
+    }
+    // Focus the bottom pane and move it right
+    state.pane_layout.active_id = p2;
+    state.pane_layout.move_direction(FocusDirection::Right);
+
+    let actual = render_to_string(80, 16, &state);
+    // Expected: top-left and top-right on the left, bottom on the far right
+    // NOT: top-left, bottom, top-right (the bug)
+    check(&actual, expect![[r#"
+          tl.rs  │  tr.rs  │  bot.rs
+          1  TL                   │  1  TR                   │  1  BOT
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+         tl.rs                    │ tr.rs                    │ bot.rs
+         NORMAL  bot.rs                                                             1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn move_bottom_pane_left_in_horizontal_split() {
+    // Same layout as above, but move bottom pane LEFT.
+    // Expected: bottom pane becomes leftmost vertical pane.
+    let buf1 = make_buffer("TL\n", "tl.rs");
+    let buf2 = make_buffer("TR\n", "tr.rs");
+    let buf3 = make_buffer("BOT\n", "bot.rs");
+    let buf2_id = buf2.id;
+    let buf3_id = buf3.id;
+    let mut state = RenderState::default()
+        .with_buffer(buf1)
+        .with_extra_buffer(buf2)
+        .with_extra_buffer(buf3);
+    let p2 = state.pane_layout.split(SplitDirection::Horizontal);
+    if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
+        pane.buffer_id = Some(buf3_id);
+    }
+    let p3 = state.pane_layout.split(SplitDirection::Vertical);
+    if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
+        pane.buffer_id = Some(buf2_id);
+    }
+    state.pane_layout.active_id = p2;
+    state.pane_layout.move_direction(FocusDirection::Left);
+
+    let actual = render_to_string(80, 16, &state);
+    check(&actual, expect![[r#"
+          tl.rs  │  tr.rs  │  bot.rs
+          1  BOT                  │  1  TL                   │  1  TR
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+          ~                       │  ~                       │  ~
+         bot.rs                   │ tl.rs                    │ tr.rs
+         NORMAL  bot.rs                                                             1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn move_right_pane_down_in_vertical_split() {
+    // Symmetric case: Vertical { [Horizontal { [left-top, left-bot] }, right] }
+    // Move right pane down.
+    let buf1 = make_buffer("LT\n", "lt.rs");
+    let buf2 = make_buffer("LB\n", "lb.rs");
+    let buf3 = make_buffer("RT\n", "rt.rs");
+    let buf2_id = buf2.id;
+    let buf3_id = buf3.id;
+    let mut state = RenderState::default()
+        .with_buffer(buf1)
+        .with_extra_buffer(buf2)
+        .with_extra_buffer(buf3);
+    let p2 = state.pane_layout.split(SplitDirection::Vertical);
+    if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
+        pane.buffer_id = Some(buf3_id);
+    }
+    let p3 = state.pane_layout.split(SplitDirection::Horizontal);
+    if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
+        pane.buffer_id = Some(buf2_id);
+    }
+    state.pane_layout.active_id = p2;
+    state.pane_layout.move_direction(FocusDirection::Down);
+
+    let actual = render_to_string(60, 16, &state);
+    check(&actual, expect![[r#"
+          lt.rs  │  lb.rs  │  rt.rs
+          1  LT
+          ~
+          ~
+         lt.rs
+        ────────────────────────────────────────────────────────────
+          1  LB
+          ~
+          ~
+         lb.rs
+        ────────────────────────────────────────────────────────────
+          1  RT
+          ~
+         rt.rs
+         NORMAL  rt.rs                                          1:1
         SPC for leader | : for commands | SPC q q to quit"#]]);
 }

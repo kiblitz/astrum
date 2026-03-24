@@ -375,11 +375,20 @@ pub fn move_pane_in_tree(root: &mut LayoutNode, pane_id: usize, direction: Focus
             }
         }
     } else {
-        // Opposite axis: wrap at the old parent level
-        if ref_path.is_empty() {
+        // Opposite axis: wrap at the old parent level.
+        // When the parent collapsed, ref_path points to the sibling which
+        // replaced the parent. We need to go one level up so we wrap the
+        // whole group, not just the sibling (which would insert the pane
+        // *inside* the sibling's container instead of alongside it).
+        let wrap_path = if will_collapse && !ref_path.is_empty() {
+            &ref_path[..ref_path.len() - 1]
+        } else {
+            &ref_path
+        };
+        if wrap_path.is_empty() {
             wrap_root(root, pane_id, target_dir, at_end);
         } else {
-            wrap_node_at_path(root, &ref_path, pane_id, target_dir, at_end);
+            wrap_node_at_path(root, wrap_path, pane_id, target_dir, at_end);
         }
     }
 
