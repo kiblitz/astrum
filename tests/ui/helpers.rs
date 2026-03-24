@@ -298,6 +298,7 @@ pub fn make_find_file(dir: &str, entries: Vec<(&str, bool, u64)>) -> FindFileSta
         entries: dir_entries,
         filtered,
         selected: 0,
+        path_selected: false,
         dir_cursor_cache: HashMap::new(),
     }
 }

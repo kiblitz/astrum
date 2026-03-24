@@ -164,11 +164,11 @@ Foundation for all UI tests. Provides:
 - `browser_last_entry_selected` — last entry selected
 - `browser_with_buffer_in_split` — browser in split pane with buffer
 
-### find_file.rs (12 tests)
+### find_file.rs (15 tests)
 - `find_file_with_entries` — popup with file entries
 - `find_file_with_query` — query filtering entries
 - `find_file_selected_second` — second item selected
-- `find_file_no_matches` — no matches shows create hint
+- `find_file_no_matches` — no matches with path auto-selected
 - `find_file_long_path` — long path display
 - `find_file_small_terminal` — 40x12 terminal
 - `find_file_many_entries` — 20 entries with scrolling
@@ -177,6 +177,9 @@ Foundation for all UI tests. Provides:
 - `find_file_with_input_and_entries` — query with filtered entries
 - `find_file_very_wide_terminal` — 160-column terminal
 - `find_file_empty_dir` — empty directory, no entries
+- `find_file_path_selected_highlight` — path line highlighted for file creation
+- `find_file_path_selected_with_matching_folder` — path selected even when folder matches name
+- `find_file_no_matches_path_auto_selected` — path auto-selected when no matches
 
 ### palette.rs (11 tests)
 - `palette_all_items` — all palette items visible

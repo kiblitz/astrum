@@ -971,9 +971,14 @@ impl Renderer {
         } else {
             &display_path
         };
+        let path_style = if ff.path_selected {
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        } else {
+            Style::default()
+        };
         let input_line = Line::from(vec![
             Span::styled("> ", Style::default().fg(Color::Cyan)),
-            Span::raw(path_display),
+            Span::styled(path_display, path_style),
         ]);
         frame.render_widget(Paragraph::new(input_line), input_area);
 
@@ -990,7 +995,7 @@ impl Renderer {
         let mut lines = Vec::new();
         for (i, &entry_idx) in ff.filtered.iter().skip(scroll_offset).take(visible_count).enumerate() {
             let entry = &ff.entries[entry_idx];
-            let is_selected = i + scroll_offset == ff.selected;
+            let is_selected = !ff.path_selected && i + scroll_offset == ff.selected;
             let style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
             } else {
@@ -1011,11 +1016,11 @@ impl Renderer {
             lines.push(Line::from(Span::styled(padded, style)));
         }
 
-        // If no matches, show a "create" hint.
+        // If no matches and input is non-empty, show a "create" hint.
         if ff.filtered.is_empty() && !ff.input.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("  Press Enter to create \"{}\"", ff.input),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC),
+                "  ↑ Select path line and press Enter to create",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
             )));
         }
 

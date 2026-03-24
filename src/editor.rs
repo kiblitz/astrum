@@ -149,6 +149,9 @@ pub struct FindFileState {
     pub filtered: Vec<usize>,
     /// Selected index within filtered results.
     pub selected: usize,
+    /// Whether the path/input line itself is selected (for file creation).
+    /// When true, pressing Enter creates a file with the current input name.
+    pub path_selected: bool,
     /// Remembered cursor positions for visited directories.
     pub dir_cursor_cache: HashMap<PathBuf, usize>,
 }
@@ -163,7 +166,7 @@ impl FindFileState {
         }];
         entries.extend(crate::file_browser::scan_directory(&dir));
         let filtered: Vec<usize> = (0..entries.len()).collect();
-        Self { dir, input: String::new(), entries, filtered, selected: 0, dir_cursor_cache: HashMap::new() }
+        Self { dir, input: String::new(), entries, filtered, selected: 0, path_selected: false, dir_cursor_cache: HashMap::new() }
     }
 
     fn refilter(&mut self) {
@@ -176,8 +179,14 @@ impl FindFileState {
                 .map(|(i, _)| i)
                 .collect();
         }
-        if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len().saturating_sub(1);
+        if self.filtered.is_empty() {
+            // No matches — select the path line for file creation.
+            self.path_selected = true;
+        } else {
+            self.path_selected = false;
+            if self.selected >= self.filtered.len() {
+                self.selected = self.filtered.len().saturating_sub(1);
+            }
         }
     }
 
@@ -209,6 +218,7 @@ impl FindFileState {
         // Restore cursor if we've been here before, clamped to entry count.
         let cached = self.dir_cursor_cache.get(&self.dir).copied().unwrap_or(0);
         self.selected = cached.min(self.filtered.len().saturating_sub(1));
+        self.path_selected = false;
     }
 
     /// Display path shown in the input line.
@@ -1935,7 +1945,20 @@ impl Editor {
             }
             KeyCode::Enter => {
                 if let Some(mut ff) = self.find_file.take() {
-                    if ff.is_dot_selected() {
+                    if ff.path_selected && !ff.input.is_empty() {
+                        // Path line selected — create the file.
+                        let new_path = ff.dir.join(&ff.input);
+                        if let Some(parent) = new_path.parent() {
+                            std::fs::create_dir_all(parent).ok();
+                        }
+                        // Record jump BEFORE removing browser so history captures browser state.
+                        self.push_jump();
+                        let pane_id = self.pane_layout.active_id;
+                        self.file_browsers.remove(&pane_id);
+                        let path_str = new_path.to_string_lossy().to_string();
+                        self.open_file(&path_str).await?;
+                        self.input.mode = Mode::Insert;
+                    } else if ff.is_dot_selected() {
                         // "." → open tree browser at current directory.
                         let dir = ff.dir.clone();
                         self.push_jump();
@@ -1945,24 +1968,13 @@ impl Editor {
                             ff.enter_dir(&entry.path);
                             self.find_file = Some(ff);
                         } else {
-                            // Close any file browser on this pane before opening the file.
+                            // Record jump BEFORE removing browser so history captures browser state.
+                            self.push_jump();
                             let pane_id = self.pane_layout.active_id;
                             self.file_browsers.remove(&pane_id);
-                            self.push_jump();
                             let path_str = entry.path.to_string_lossy().to_string();
                             self.open_file(&path_str).await?;
                         }
-                    } else if !ff.input.is_empty() {
-                        let new_path = ff.dir.join(&ff.input);
-                        if let Some(parent) = new_path.parent() {
-                            std::fs::create_dir_all(parent).ok();
-                        }
-                        let pane_id = self.pane_layout.active_id;
-                        self.file_browsers.remove(&pane_id);
-                        self.push_jump();
-                        let path_str = new_path.to_string_lossy().to_string();
-                        self.open_file(&path_str).await?;
-                        self.input.mode = Mode::Insert;
                     }
                 }
             }
@@ -1994,12 +2006,25 @@ impl Editor {
             }
             KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
                 if let Some(ref mut ff) = self.find_file {
-                    ff.selected = ff.selected.saturating_sub(1);
+                    if ff.path_selected {
+                        // Already at top (path line) — do nothing.
+                    } else if ff.selected == 0 {
+                        // Move from first entry up to the path line.
+                        ff.path_selected = true;
+                    } else {
+                        ff.selected = ff.selected.saturating_sub(1);
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
                 if let Some(ref mut ff) = self.find_file {
-                    if ff.selected + 1 < ff.filtered.len() {
+                    if ff.path_selected {
+                        // Move from path line back to first entry (if any).
+                        if !ff.filtered.is_empty() {
+                            ff.path_selected = false;
+                            ff.selected = 0;
+                        }
+                    } else if ff.selected + 1 < ff.filtered.len() {
                         ff.selected += 1;
                     }
                 }
@@ -2082,9 +2107,9 @@ impl Editor {
                             ff.enter_dir(&entry.path);
                             self.find_file = Some(ff);
                         } else {
+                            self.push_jump();
                             let pane_id = self.pane_layout.active_id;
                             self.file_browsers.remove(&pane_id);
-                            self.push_jump();
                             let path_str = entry.path.to_string_lossy().to_string();
                             self.open_file(&path_str).await?;
                         }

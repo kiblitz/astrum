@@ -30,6 +30,9 @@ The crate exposes a library target (`src/lib.rs`) so integration tests can impor
 
 **Every bug fix or behavior change must include tests in the same commit.** Do not wait to be asked — tests are mandatory, not optional.
 
+### Bug fix workflow
+When a bug is reported, **always reproduce it in a failing test first**, then fix the code so the test passes. Never fix first and test after — the test must demonstrate the bug exists before the fix is applied. Both the test and the fix go in the same commit.
+
 ### UI test policy
 When adding or modifying any UI feature (overlays, status line, pane layout, tab bar, etc.), add or update corresponding UI snapshot tests in `tests/ui/`. The `RenderState` builder in `tests/ui/helpers.rs` makes it easy to construct any render scenario. Use `UPDATE_EXPECT=1 cargo test` to generate snapshots of new behavior, then review the diffs to confirm correctness.
 
@@ -68,6 +71,18 @@ Find-file and command palette are **overlays** — they float above pane content
 5. Do NOT add custom blank-row filling, custom input padding, or byte-offset span splitting — these cause rendering artifacts
 
 The `Clear` widget handles background erasure. Ratatui's buffer diffing handles the rest. Extra manual padding with byte-indexed string slicing (`&s[..n]`) causes rendering corruption because byte offsets don't always align with display column widths.
+
+### Find-file file creation
+The find-file overlay uses a **selectable path line** for file creation. `FindFileState.path_selected: bool` tracks whether the path/input line itself is selected:
+- The path line sits above the entry list and shows `> <dir>/<input>`
+- **Up** from the first entry selects the path line; **Down** from the path line returns to entries
+- When `path_selected = true`, the path line is highlighted (DarkGray bg) and no entry is highlighted
+- **Enter** with `path_selected = true` creates a file at `dir/input` (enters Insert mode)
+- `refilter()` auto-sets `path_selected = true` when no entries match (so the user can always create)
+- This design allows creating a file with the same name as an existing folder (select path line instead of folder entry)
+
+### Jump history and find-file
+When find-file opens a file or creates one, `push_jump()` must be called **before** `file_browsers.remove()` so the jump history captures the browser state (if any). Getting this order wrong causes jump-back to go to the wrong location.
 
 ### Cursor management
 Ratatui manages cursor visibility. Calling `set_cursor_position` shows the cursor; not calling it hides it. Never use manual `cursor::Show`/`cursor::Hide` after `terminal.draw()` — it fights with ratatui.

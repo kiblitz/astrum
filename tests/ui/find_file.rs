@@ -132,6 +132,7 @@ fn find_file_no_matches() {
     ]);
     ff.input = "zzz".to_string();
     ff.filtered = vec![]; // No matches.
+    ff.path_selected = true; // Auto-selected when no matches.
     let buf = make_buffer("hello\n", "main.rs");
     let state = RenderState::default()
         .with_buffer(buf)
@@ -144,7 +145,7 @@ fn find_file_no_matches() {
           ~
           ~             ┌ Find File ───────────────────────────────────┐
           ~             │> /home/user/project\zzz                      │
-          ~             │  Press Enter to create "zzz"                 │
+          ~             │  ↑ Select path line and press Enter to create│
           ~             │                                              │
           ~             │                                              │
           ~             │                                              │
@@ -445,6 +446,137 @@ fn find_file_empty_dir() {
           ~             ┌ Find File ───────────────────────────────────┐
           ~             │> /test\                                      │
           ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             └──────────────────────────────────────────────┘
+          ~
+          ~
+         NORMAL  main.rs                                                            1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn find_file_path_selected_highlight() {
+    // When path_selected is true, the path line should be highlighted
+    // and no entry should appear selected.
+    let mut ff = make_find_file("/home/user/project", vec![
+        (".", true, 0),
+        ("src", true, 0),
+        ("Cargo.toml", false, 1234),
+    ]);
+    ff.input = "new_file.rs".to_string();
+    ff.filtered = vec![]; // Nothing matches "new_file.rs"
+    ff.path_selected = true;
+    let buf = make_buffer("hello\n", "main.rs");
+    let state = RenderState::default()
+        .with_buffer(buf)
+        .with_find_file(ff);
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+          1  hello
+          ~
+          ~
+          ~             ┌ Find File ───────────────────────────────────┐
+          ~             │> /home/user/project\new_file.rs              │
+          ~             │  ↑ Select path line and press Enter to create│
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             └──────────────────────────────────────────────┘
+          ~
+          ~
+         NORMAL  main.rs                                                            1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn find_file_path_selected_with_matching_folder() {
+    // User types a name that matches an existing folder. path_selected=true
+    // means the path line is selected for file creation, not the folder entry.
+    let mut ff = make_find_file("/test", vec![
+        (".", true, 0),
+        ("src", true, 0),
+        ("tests", true, 0),
+    ]);
+    ff.input = "src".to_string();
+    ff.filtered = vec![1]; // "src" folder matches
+    ff.path_selected = true; // User pressed Up to select path line
+    let buf = make_buffer("hello\n", "main.rs");
+    let state = RenderState::default()
+        .with_buffer(buf)
+        .with_find_file(ff);
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+          1  hello
+          ~
+          ~
+          ~             ┌ Find File ───────────────────────────────────┐
+          ~             │> /test\src                                   │
+          ~             │src/                                          │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             └──────────────────────────────────────────────┘
+          ~
+          ~
+         NORMAL  main.rs                                                            1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn find_file_no_matches_path_auto_selected() {
+    // When all entries are filtered out, path_selected is automatically set to true.
+    // The create hint should appear and the path line should be highlighted.
+    let mut ff = make_find_file("/test", vec![
+        (".", true, 0),
+        ("main.rs", false, 100),
+    ]);
+    ff.input = "brand_new.rs".to_string();
+    ff.filtered = vec![]; // Nothing matches
+    ff.path_selected = true; // Auto-set by refilter()
+    let buf = make_buffer("hello\n", "main.rs");
+    let state = RenderState::default()
+        .with_buffer(buf)
+        .with_find_file(ff);
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+          1  hello
+          ~
+          ~
+          ~             ┌ Find File ───────────────────────────────────┐
+          ~             │> /test\brand_new.rs                          │
+          ~             │  ↑ Select path line and press Enter to create│
           ~             │                                              │
           ~             │                                              │
           ~             │                                              │
