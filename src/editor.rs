@@ -1533,6 +1533,13 @@ impl Editor {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
+                    // Guard: refuse to overwrite a directory with a file.
+                    if path.is_dir() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("path is a directory: {}", path.display()),
+                        ));
+                    }
                     std::fs::write(&path, text)
                 })
                     .await?
@@ -1551,7 +1558,10 @@ impl Editor {
                         self.status_message = format!("Saved: {}", name);
                     }
                     Err(e) => {
-                        self.status_message = format!("Error saving {}: {}", name, e);
+                        let path_display = buf.path.as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        self.status_message = format!("Error saving {}: {} (path: {})", name, e, path_display);
                     }
                 }
             } else {
@@ -1954,16 +1964,18 @@ impl Editor {
                     if ff.path_selected && !ff.input.is_empty() {
                         // Path line selected — create the file.
                         let new_path = ff.dir.join(&ff.input);
-                        if let Some(parent) = new_path.parent() {
-                            std::fs::create_dir_all(parent).ok();
+                        if new_path.exists() {
+                            self.status_message = format!("\"{}\" already exists", ff.input);
+                            self.find_file = Some(ff);
+                        } else {
+                            // Record jump BEFORE removing browser so history captures browser state.
+                            self.push_jump();
+                            let pane_id = self.pane_layout.active_id;
+                            self.file_browsers.remove(&pane_id);
+                            let path_str = new_path.to_string_lossy().to_string();
+                            self.open_file(&path_str).await?;
+                            self.input.mode = Mode::Insert;
                         }
-                        // Record jump BEFORE removing browser so history captures browser state.
-                        self.push_jump();
-                        let pane_id = self.pane_layout.active_id;
-                        self.file_browsers.remove(&pane_id);
-                        let path_str = new_path.to_string_lossy().to_string();
-                        self.open_file(&path_str).await?;
-                        self.input.mode = Mode::Insert;
                     } else if ff.is_dot_selected() {
                         // "." → open tree browser at current directory.
                         let dir = ff.dir.clone();
