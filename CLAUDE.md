@@ -46,6 +46,7 @@ When adding or modifying any UI feature (overlays, status line, pane layout, tab
 - **config.rs** — KDL config loading with default keybindings
 - **syntax.rs** — Tree-sitter incremental syntax highlighting
 - **file_browser.rs** — Tree-style file browser overlay on panes
+- **terminal.rs** — Built-in terminal emulator (PTY + VTE parsing)
 - **swap.rs** — Swap file management and external change detection
 
 ## Key Design Decisions
@@ -210,6 +211,19 @@ Comment toggling for any file type.
 - **Empty lines**: skipped during line comment/uncomment (never modified)
 - **Undo**: single `save_undo()` for the entire operation (atomic)
 - **Buffer methods**: `toggle_line_comment(first_line, last_line, prefix)`, `toggle_block_comment(start, end, open, close)` in buffer.rs
+
+### Built-in terminal
+Embedded terminal emulator using PTY + VTE parsing.
+
+- **Architecture**: `TerminalSession` in `terminal.rs` owns a PTY child process, a character grid (`Vec<Vec<Cell>>`), and a VTE parser. Background reader thread sends PTY output via `tokio::sync::mpsc` channel to the editor event loop.
+- **Rendering**: Terminal is **pane content** (like file browsers). `terminals: HashMap<usize, TerminalSession>` keyed by pane ID. Renderer priority: terminal > file browser > buffer > welcome.
+- **Vim-style modes**: Reuses existing Normal/Insert modes (no separate `Mode::Terminal`). In **Insert mode**, all keys are sent directly to the PTY (Esc returns to Normal). In **Normal mode**, all normal editor commands work (SPC leader, `:` commands, motions).
+- **Commands**: `:term` / `:terminal` opens a terminal, optionally with a shell argument (`:term bash`). `Action::OpenTerminal` is the action variant.
+- **PTY management**: `portable-pty` crate for cross-platform PTY spawning (ConPTY on Windows, Unix PTYs). `vte` crate for VT100 escape sequence parsing.
+- **VTE support**: SGR colors (16, 256, true color RGB), cursor movement, erase operations, scroll regions, save/restore cursor, window title (OSC), bold/italic/underline/reverse/strikethrough modifiers.
+- **Lifecycle**: Terminals are killed when their pane is closed (`quit_current`) and when the editor exits (`cleanup`). Child exit is detected via `check_exit()` polling on output receive. Exit message shown in grid and status line.
+- **Resize**: `Event::Resize` propagates to all terminal sessions. Grid is resized and PTY notified.
+- **Status line**: Shows "TERMINAL" mode indicator (green bg in Insert, blue in Normal), terminal title, and exit info if process ended.
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.

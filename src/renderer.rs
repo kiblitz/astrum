@@ -31,6 +31,7 @@ impl Renderer {
         pending_hints: &[(String, String)],
         highlight_cache: &HighlightCache,
         file_browsers: &HashMap<usize, FileBrowser>,
+        terminals: &HashMap<usize, crate::terminal::TerminalSession>,
         palette: &Option<PaletteState>,
         find_file: &Option<FindFileState>,
         search_state: &SearchState,
@@ -79,11 +80,14 @@ impl Renderer {
 
         // Main area: always render panes, overlay file browsers on their panes
         let active_fb = file_browsers.get(&pane_layout.active_id);
-        if !buffers.is_empty() || !pane_layout.is_single() {
+        let active_term = terminals.get(&pane_layout.active_id);
+        if !buffers.is_empty() || !pane_layout.is_single() || !terminals.is_empty() {
             let show_cursor = !has_overlay;
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, terminals, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
             // Status line
-            if let Some(fb) = active_fb {
+            if let Some(term) = active_term {
+                self.render_terminal_status(frame, chunks[2], term, mode);
+            } else if let Some(fb) = active_fb {
                 self.render_file_browser_status(frame, chunks[2], fb);
             } else {
                 let active_pane = pane_layout.active_pane();
@@ -165,6 +169,7 @@ impl Renderer {
         buffers: &[Buffer],
         highlight_cache: &HighlightCache,
         file_browsers: &HashMap<usize, FileBrowser>,
+        terminals: &HashMap<usize, crate::terminal::TerminalSession>,
         show_cursor: bool,
         search_state: &SearchState,
         mode: &Mode,
@@ -201,8 +206,11 @@ impl Renderer {
                     // Store the content height for viewport calculations.
                     pane.height.set(content_area.height);
 
-                    // File browser renders on its owning pane
-                    if let Some(fb) = pane_fb {
+                    // Terminal, file browser, or editor content
+                    let pane_term = terminals.get(&pane.id);
+                    if let Some(term) = pane_term {
+                        self.render_terminal(frame, content_area, term, is_active && show_cursor && *mode == Mode::Insert);
+                    } else if let Some(fb) = pane_fb {
                         self.render_file_browser(frame, content_area, fb);
                     } else if let Some(buf) = pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
                         let pane_visual = if is_active && *mode == Mode::Visual { visual_anchor } else { None };
@@ -214,10 +222,14 @@ impl Renderer {
 
                     // Per-pane indicator when splits exist
                     if let Some(ind_area) = indicator_area {
-                        let buf_name = pane.buffer_id
-                            .and_then(|bid| buffers.iter().find(|b| b.id == bid))
-                            .map(|b| b.name.as_str())
-                            .unwrap_or("[No File]");
+                        let buf_name = if let Some(term) = pane_term {
+                            &term.title
+                        } else {
+                            pane.buffer_id
+                                .and_then(|bid| buffers.iter().find(|b| b.id == bid))
+                                .map(|b| b.name.as_str())
+                                .unwrap_or("[No File]")
+                        };
                         let style = if is_active {
                             Style::default().fg(Color::Black).bg(Color::Blue)
                         } else {
@@ -259,7 +271,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, terminals, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -293,7 +305,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, terminals, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
                             y_offset += h;
 
                             if i + 1 < children.len() {
@@ -581,6 +593,107 @@ impl Renderer {
             Span::styled(
                 hints,
                 Style::default().fg(Color::DarkGray).bg(Color::DarkGray),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    // -- Terminal --
+
+    fn render_terminal(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        term: &crate::terminal::TerminalSession,
+        show_cursor: bool,
+    ) {
+        use ratatui::text::Line;
+
+        for (y, row) in term.grid.iter().enumerate() {
+            if y >= area.height as usize {
+                break;
+            }
+            let spans: Vec<Span> = row
+                .iter()
+                .take(area.width as usize)
+                .map(|cell| Span::styled(cell.ch.to_string(), cell.style))
+                .collect();
+            let line = Line::from(spans);
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect {
+                    x: area.x,
+                    y: area.y + y as u16,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
+
+        // Show exited message if terminal has ended.
+        if let Some(ref msg) = term.exited {
+            let y = term.cursor_row.min(area.height.saturating_sub(1) as usize);
+            let line = Line::from(Span::styled(
+                msg,
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect {
+                    x: area.x,
+                    y: area.y + y as u16,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
+
+        if show_cursor && term.exited.is_none() {
+            let cx = area.x + (term.cursor_col as u16).min(area.width.saturating_sub(1));
+            let cy = area.y + (term.cursor_row as u16).min(area.height.saturating_sub(1));
+            frame.set_cursor_position((cx, cy));
+        }
+    }
+
+    fn render_terminal_status(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        term: &crate::terminal::TerminalSession,
+        mode: &Mode,
+    ) {
+        let mode_str = match mode {
+            Mode::Insert => " TERMINAL ",
+            _ => " TERMINAL ",
+        };
+        let mode_style = match mode {
+            Mode::Insert => Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            _ => Style::default()
+                .fg(Color::Black)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        };
+
+        let title = format!("  {} ", term.title);
+        let exit_info = if let Some(ref msg) = term.exited {
+            format!("  {} ", msg)
+        } else {
+            String::new()
+        };
+
+        let used = mode_str.len() + title.len() + exit_info.len();
+        let pad = (area.width as usize).saturating_sub(used);
+
+        let line = Line::from(vec![
+            Span::styled(mode_str, mode_style),
+            Span::styled(&title, Style::default().fg(Color::White).bg(Color::DarkGray)),
+            Span::styled(" ".repeat(pad), Style::default().bg(Color::DarkGray)),
+            Span::styled(
+                &exit_info,
+                Style::default().fg(Color::Yellow).bg(Color::DarkGray),
             ),
         ]);
         frame.render_widget(Paragraph::new(line), area);

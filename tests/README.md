@@ -27,6 +27,7 @@ tests/
     find_file.rs
     palette.rs
     recent_picker.rs
+    terminal.rs
     integration.rs
 ```
 
@@ -36,12 +37,13 @@ UI tests render the full TUI frame using ratatui's `TestBackend`, extract the ce
 
 ### helpers.rs
 Foundation for all UI tests. Provides:
-- `RenderState` — builder struct with defaults for all 21 `renderer.render()` parameters. Builder methods: `.with_buffer()`, `.with_extra_buffer()`, `.with_mode()`, `.with_command()`, `.with_search()`, `.with_visual_anchor()`, `.with_recording_macro()`, `.with_config_error()`, `.with_pending_keys()`, `.with_file_browser()`, `.with_palette()`, `.with_find_file()`, `.with_recent_picker()`, `.with_search_matches()`, `.with_substitute_highlight()`
+- `RenderState` — builder struct with defaults for all `renderer.render()` parameters. Builder methods: `.with_buffer()`, `.with_extra_buffer()`, `.with_mode()`, `.with_command()`, `.with_search()`, `.with_visual_anchor()`, `.with_recording_macro()`, `.with_config_error()`, `.with_pending_keys()`, `.with_file_browser()`, `.with_palette()`, `.with_find_file()`, `.with_recent_picker()`, `.with_search_matches()`, `.with_substitute_highlight()`, `.with_terminal()`
 - `render_to_string(width, height, &state)` — renders a frame and returns the cell grid as a string
 - `check(actual, expect)` — expect-test assertion wrapper
 - `make_buffer(text, name)` / `make_buffer_at(text, name, line, col)` — quick buffer constructors
 - `make_dir_entry(name, is_dir, size)` — DirEntry for browser/find-file tests
 - `make_palette(items)` / `make_recent_picker(items)` / `make_find_file(dir, entries)` — overlay state constructors
+- `make_terminal(rows, cols, lines, title)` — mock terminal session for rendering tests
 
 ### welcome.rs (8 tests)
 - `welcome_basic_80x24` — standard welcome screen with ASCII art, version, shortcuts
@@ -210,6 +212,13 @@ Foundation for all UI tests. Provides:
 - `recent_selected_last` — last item selected
 - `recent_long_paths` — long path display
 - `recent_mixed_long_short` — mixed path lengths
+
+### terminal.rs (5 tests)
+- `terminal_pane_shows_grid_content` — terminal grid text rendered in pane
+- `terminal_status_line_insert_mode` — TERMINAL status with Insert mode (green)
+- `terminal_status_line_normal_mode` — TERMINAL status with Normal mode (blue)
+- `terminal_exited_shows_message` — exit message in grid and status line
+- `terminal_with_title` — custom terminal title in status line
 
 ### integration.rs (23 tests)
 - `full_frame_welcome_80x24` — complete 80x24 welcome screen

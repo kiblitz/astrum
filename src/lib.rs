@@ -9,3 +9,4 @@ pub mod pane;
 pub mod renderer;
 pub mod swap;
 pub mod syntax;
+pub mod terminal;

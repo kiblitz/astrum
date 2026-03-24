@@ -9,6 +9,7 @@ use astrum::input::Mode;
 use astrum::pane::PaneLayout;
 use astrum::renderer::Renderer;
 use astrum::syntax::HighlightCache;
+use astrum::terminal::TerminalSession;
 use expect_test::Expect;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -37,6 +38,7 @@ pub struct RenderState {
     pub recording_macro: Option<char>,
     pub config_error: Option<String>,
     pub recent_picker: Option<RecentPickerState>,
+    pub terminals: HashMap<usize, TerminalSession>,
 }
 
 impl Default for RenderState {
@@ -65,6 +67,7 @@ impl Default for RenderState {
             recording_macro: None,
             config_error: None,
             recent_picker: None,
+            terminals: HashMap::new(),
         }
     }
 }
@@ -163,6 +166,12 @@ impl RenderState {
         self.substitute_highlight = Some((line, start, end));
         self
     }
+
+    /// Add a terminal session to a pane and set it as active.
+    pub fn with_terminal(mut self, pane_id: usize, term: TerminalSession) -> Self {
+        self.terminals.insert(pane_id, term);
+        self
+    }
 }
 
 /// Render the state into a TestBackend and return the frame as a string.
@@ -185,6 +194,7 @@ pub fn render_to_string(width: u16, height: u16, state: &RenderState) -> String 
                 &state.pending_hints,
                 &state.highlight_cache,
                 &state.file_browsers,
+                &state.terminals,
                 &state.palette,
                 &state.find_file,
                 &state.search_state,
@@ -301,4 +311,9 @@ pub fn make_find_file(dir: &str, entries: Vec<(&str, bool, u64)>) -> FindFileSta
         path_selected: false,
         dir_cursor_cache: HashMap::new(),
     }
+}
+
+/// Create a mock TerminalSession with pre-populated grid content.
+pub fn make_terminal(rows: u16, cols: u16, lines: &[&str], title: &str) -> TerminalSession {
+    TerminalSession::new_mock(rows, cols, lines, title)
 }

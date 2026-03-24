@@ -321,6 +321,12 @@ pub struct Editor {
     recent_paths: Vec<PathBuf>,
     /// Recent files picker overlay.
     recent_picker: Option<RecentPickerState>,
+    /// Per-pane terminal sessions. Key is the pane id.
+    pub terminals: HashMap<usize, crate::terminal::TerminalSession>,
+    /// Channel for receiving terminal output from background reader threads.
+    terminal_rx: tokio::sync::mpsc::UnboundedReceiver<(usize, Vec<u8>)>,
+    /// Sender side (cloned per terminal reader thread).
+    terminal_tx: tokio::sync::mpsc::UnboundedSender<(usize, Vec<u8>)>,
 }
 
 /// Parsed `:s` or `:%s` substitute command.
@@ -516,6 +522,7 @@ impl Editor {
         let comment_syntax = config.comment_syntax;
         let highlight_engine = HighlightEngine::new();
         let swap_manager = SwapManager::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         Ok(Self {
             buffers: Vec::new(),
@@ -546,6 +553,9 @@ impl Editor {
             config_error: None,
             recent_paths: Vec::new(),
             recent_picker: None,
+            terminals: HashMap::new(),
+            terminal_rx: rx,
+            terminal_tx: tx,
         })
     }
 
@@ -637,6 +647,53 @@ impl Editor {
         self.pane_layout.active_pane_mut().switch_buffer(buf_id);
     }
 
+    /// Open a terminal in the active pane.
+    fn open_terminal(&mut self, shell: Option<&str>) -> Result<()> {
+        let pane_id = self.pane_layout.active_id;
+        // Close any existing terminal on this pane.
+        if let Some(mut old) = self.terminals.remove(&pane_id) {
+            old.kill();
+        }
+        // Use a default size; resize will correct it on the next render frame.
+        let size = self.terminal.size()?;
+        let rows = size.height.saturating_sub(3).max(1);
+        let cols = size.width.max(1);
+        match crate::terminal::TerminalSession::new(rows, cols, shell) {
+            Ok(session) => {
+                let term_id = session.id;
+                // Take the reader and spawn a background thread to forward output.
+                if let Some(mut reader) = session.take_reader() {
+                    let tx = self.terminal_tx.clone();
+                    std::thread::spawn(move || {
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            match reader.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if tx.send((term_id, buf[..n].to_vec())).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    });
+                }
+                // Clear buffer assignment — terminal replaces the buffer view.
+                self.pane_layout.active_pane_mut().buffer_id = None;
+                // Remove any file browser on this pane.
+                self.file_browsers.remove(&pane_id);
+                self.terminals.insert(pane_id, session);
+                self.input.mode = Mode::Insert;
+                self.status_message = "Terminal opened".into();
+            }
+            Err(e) => {
+                self.status_message = format!("Failed to open terminal: {}", e);
+            }
+        }
+        Ok(())
+    }
+
     fn request_highlight(&mut self, buf_id: usize) {
         if let Some(buf) = self.buffers.iter().find(|b| b.id == buf_id) {
             let source = buf.text_snapshot();
@@ -712,6 +769,7 @@ impl Editor {
                 let pending_hints = self.input.pending_hints();
                 let hl_cache = &self.highlight_cache;
                 let file_browsers = &self.file_browsers;
+                let terminals = &self.terminals;
 
                 let palette = &self.palette;
                 let find_file = &self.find_file;
@@ -729,9 +787,9 @@ impl Editor {
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
-                        &pending_hints, hl_cache, file_browsers, palette, find_file,
-                        search_state, search_buf, search_dir, visual_anchor, sub_hl,
-                        rec_macro, config_err, recent_picker,
+                        &pending_hints, hl_cache, file_browsers, terminals, palette,
+                        find_file, search_state, search_buf, search_dir, visual_anchor,
+                        sub_hl, rec_macro, config_err, recent_picker,
                     );
                 })?;
             }
@@ -777,14 +835,28 @@ impl Editor {
                                 }
 
                                 let active_id = self.pane_layout.active_id;
+                                let on_terminal_pane = self.terminals.contains_key(&active_id);
                                 let on_browser_pane = self.file_browsers.contains_key(&active_id);
                                 let in_command_mode = self.input.mode == Mode::Command;
+                                let in_search_mode = self.input.mode == Mode::Search;
                                 let browser_navigate = on_browser_pane
                                     && !in_command_mode
                                     && self.file_browsers.get(&active_id)
                                         .map_or(false, |fb| fb.input_mode == crate::file_browser::BrowserInputMode::Navigate);
 
-                                if browser_navigate {
+                                if on_terminal_pane && self.input.mode == Mode::Insert
+                                    && !in_command_mode && !in_search_mode
+                                {
+                                    // In Insert mode on a terminal pane: send keys to PTY.
+                                    // Esc goes back to Normal mode (handled by input handler).
+                                    if key.code == crossterm::event::KeyCode::Esc {
+                                        self.input.mode = Mode::Normal;
+                                    } else if let Some(bytes) = crate::terminal::key_to_bytes(&key) {
+                                        if let Some(term) = self.terminals.get_mut(&active_id) {
+                                            let _ = term.write_bytes(&bytes);
+                                        }
+                                    }
+                                } else if browser_navigate {
                                     self.handle_file_browser_action(key).await?;
                                 } else if on_browser_pane && !in_command_mode {
                                     self.quit_pending = false;
@@ -817,8 +889,26 @@ impl Editor {
                                     }
                                 }
                             }
-                            Event::Resize(_, _) => {}
+                            Event::Resize(w, h) => {
+                                // Resize all terminal sessions to match their pane area.
+                                // Approximate: subtract status bar and tab bar rows.
+                                let term_rows = h.saturating_sub(3).max(1);
+                                for (_, term) in &mut self.terminals {
+                                    term.resize(term_rows, w);
+                                }
+                            }
                             _ => {}
+                        }
+                    }
+                }
+                // Terminal output from background reader threads.
+                Some((term_id, data)) = self.terminal_rx.recv() => {
+                    for (_, term) in &mut self.terminals {
+                        if term.id == term_id {
+                            term.process_output(&data);
+                            // Check if the child has exited after processing output.
+                            term.check_exit();
+                            break;
                         }
                     }
                 }
@@ -1343,6 +1433,10 @@ impl Editor {
                 }
             }
 
+            Action::OpenTerminal => {
+                self.open_terminal(None)?;
+            }
+
             Action::SaveBuffer => {
                 self.save_current_buffer().await?;
             }
@@ -1683,6 +1777,10 @@ impl Editor {
             Some("new") => {
                 self.new_scratch_buffer();
             }
+            Some("term") | Some("terminal") => {
+                let shell = if parts.len() > 1 { Some(parts[1]) } else { None };
+                self.open_terminal(shell)?;
+            }
             Some(c) => {
                 if let Ok(n) = c.parse::<usize>() {
                     if n > 0 {
@@ -1716,6 +1814,9 @@ impl Editor {
             self.pane_layout.close_active();
             self.file_browsers.remove(&pane_id);
             self.jump_history.remove(&pane_id);
+            if let Some(mut term) = self.terminals.remove(&pane_id) {
+                term.kill();
+            }
         } else if force || self.confirm_double_quit() {
             self.should_quit = true;
         }
@@ -3033,6 +3134,9 @@ impl Editor {
     }
 
     fn cleanup(&mut self) {
+        for (_, mut term) in self.terminals.drain() {
+            term.kill();
+        }
         self.swap_manager.cleanup_all();
         let _ = terminal::disable_raw_mode();
         let _ = execute!(

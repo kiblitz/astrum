@@ -139,6 +139,9 @@ pub enum Action {
     // -- Comment --
     CommentToggle,
 
+    // -- Terminal --
+    OpenTerminal,
+
     // -- Runtime-only --
     InsertChar(char),
     ExecuteCommand(String),
@@ -256,6 +259,8 @@ const ACTION_TABLE: &[(&str, &str, Action)] = &[
     ("PlayMacro", "Play macro", Action::PlayMacro),
     // Comment
     ("CommentToggle", "Toggle line comment", Action::CommentToggle),
+    // Terminal
+    ("OpenTerminal", "Open terminal", Action::OpenTerminal),
 ];
 
 impl Action {

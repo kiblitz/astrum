@@ -9,4 +9,5 @@ mod file_browser;
 mod find_file;
 mod palette;
 mod recent_picker;
+mod terminal;
 mod integration;
