@@ -52,6 +52,15 @@ Buffer closing (`:bd`, `CloseBuffer` action) is a separate operation from quitti
 ### Overlays vs pane content
 Find-file and command palette are **overlays** — they float above pane content and intercept all input. File browsers are **pane content** — they replace the buffer view on a specific pane. Overlays suppress cursor positioning (the `show_cursor` / `has_overlay` pattern in the renderer).
 
+**Overlay rendering rule:** All overlay popups (find-file, palette, recent picker) must follow the same rendering pattern. The canonical pattern is in `render_find_file`. When adding a new overlay:
+1. Use `Clear` widget on the popup area
+2. Render a `Block` with borders
+3. Render a simple input line: `Span::styled("> ", cyan)` + `Span::raw(&query)` — do NOT manually pad, split at byte offsets, or fill blank rows
+4. Render item lines with `Span::styled(padded, style)` where `padded` is the name right-padded with spaces to `list_area.width`
+5. Do NOT add custom blank-row filling, custom input padding, or byte-offset span splitting — these cause rendering artifacts
+
+The `Clear` widget handles background erasure. Ratatui's buffer diffing handles the rest. Extra manual padding with byte-indexed string slicing (`&s[..n]`) causes rendering corruption because byte offsets don't always align with display column widths.
+
 ### Cursor management
 Ratatui manages cursor visibility. Calling `set_cursor_position` shows the cursor; not calling it hides it. Never use manual `cursor::Show`/`cursor::Hide` after `terminal.draw()` — it fights with ratatui.
 

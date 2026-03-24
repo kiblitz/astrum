@@ -1109,6 +1109,7 @@ impl Renderer {
     }
 
     fn render_recent_picker(&self, frame: &mut Frame, area: Rect, rp: &RecentPickerState) {
+        // Centered popup, same dimensions as find-file / palette.
         let width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
         let max_height = (area.height * 7 / 10).max(10).min(area.height.saturating_sub(2));
         let x = (area.width.saturating_sub(width)) / 2;
@@ -1129,18 +1130,11 @@ impl Renderer {
             return;
         }
 
-        // Query input line.
+        // Query input line (matches find-file pattern).
         let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
-        let prompt = format!("> {}", rp.query);
-        let avail = inner.width as usize;
-        let padded_input = if prompt.len() < avail {
-            format!("{}{}", prompt, " ".repeat(avail - prompt.len()))
-        } else {
-            prompt[..avail].to_string()
-        };
         let input_line = Line::from(vec![
-            Span::styled(&padded_input[..2.min(padded_input.len())], Style::default().fg(Color::Cyan)),
-            Span::raw(&padded_input[2.min(padded_input.len())..]),
+            Span::styled("> ", Style::default().fg(Color::Cyan)),
+            Span::raw(&rp.query),
         ]);
         frame.render_widget(Paragraph::new(input_line), input_area);
 
@@ -1167,6 +1161,7 @@ impl Renderer {
             let icon = if item.is_dir { "/" } else { "" };
             let name = format!("{}{}", item.display, icon);
 
+            // Pad to full width (matches find-file pattern).
             let available = list_area.width as usize;
             let padded = if name.len() < available {
                 format!("{}{}", name, " ".repeat(available - name.len()))
@@ -1182,12 +1177,6 @@ impl Renderer {
                 "  No recent files",
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
             )));
-        }
-
-        // Fill remaining rows with blanks to prevent bleed-through.
-        let blank = " ".repeat(list_area.width as usize);
-        while lines.len() < visible_count {
-            lines.push(Line::from(Span::raw(&blank)));
         }
 
         frame.render_widget(Paragraph::new(lines), list_area);

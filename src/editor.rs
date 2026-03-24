@@ -409,6 +409,60 @@ fn strip_unc_prefix(path: &Path) -> PathBuf {
     }
 }
 
+/// Compute the shortest unique suffix for each path in a list.
+///
+/// Starting from just the filename, extends with parent components until
+/// no two paths share the same display string. Paths that are already unique
+/// at a shorter suffix keep their short form.
+fn shortest_unique_suffixes(paths: &[PathBuf]) -> Vec<String> {
+    let components: Vec<Vec<String>> = paths
+        .iter()
+        .map(|p| {
+            p.components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    // Start each path at depth 1 (just the filename).
+    let mut depths: Vec<usize> = vec![1; paths.len()];
+
+    loop {
+        // Build display strings at current depths.
+        let displays: Vec<String> = components
+            .iter()
+            .zip(depths.iter())
+            .map(|(comps, &depth)| {
+                let start = comps.len().saturating_sub(depth);
+                comps[start..].join(&std::path::MAIN_SEPARATOR.to_string())
+            })
+            .collect();
+
+        // Find collisions: group indices by display string.
+        let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, d) in displays.iter().enumerate() {
+            groups.entry(d.as_str()).or_default().push(i);
+        }
+
+        // Extend depth for any group with duplicates.
+        let mut changed = false;
+        for indices in groups.values() {
+            if indices.len() > 1 {
+                for &i in indices {
+                    if depths[i] < components[i].len() {
+                        depths[i] += 1;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            return displays;
+        }
+    }
+}
+
 fn apply_motion(b: &mut Buffer, action: &Action, viewport_height: usize) {
     match action {
         Action::MoveUp => b.move_up(),
@@ -1176,19 +1230,13 @@ impl Editor {
             // Buffer management
             Action::OpenRecentPicker => {
                 if self.recent_picker.is_none() {
-                    let cwd = std::env::current_dir().ok();
-                    let items: Vec<RecentItem> = self.recent_paths.iter().map(|p| {
-                        let is_dir = p.is_dir();
-                        // Show relative path when under CWD, otherwise absolute.
-                        let display = cwd.as_ref()
-                            .and_then(|cwd| p.strip_prefix(cwd).ok())
-                            .map(|rel| {
-                                let s = rel.display().to_string();
-                                if s.is_empty() { ".".to_string() } else { s }
-                            })
-                            .unwrap_or_else(|| p.display().to_string());
-                        RecentItem { path: p.clone(), display, is_dir }
-                    }).collect();
+                    let suffixes = shortest_unique_suffixes(&self.recent_paths);
+                    let items: Vec<RecentItem> = self.recent_paths.iter()
+                        .zip(suffixes)
+                        .map(|(p, display)| {
+                            let is_dir = p.is_dir();
+                            RecentItem { path: p.clone(), display, is_dir }
+                        }).collect();
                     self.recent_picker = Some(RecentPickerState::new(items));
                     execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
