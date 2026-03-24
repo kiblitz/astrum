@@ -164,7 +164,7 @@ Foundation for all UI tests. Provides:
 - `browser_last_entry_selected` — last entry selected
 - `browser_with_buffer_in_split` — browser in split pane with buffer
 
-### find_file.rs (15 tests)
+### find_file.rs (17 tests)
 - `find_file_with_entries` — popup with file entries
 - `find_file_with_query` — query filtering entries
 - `find_file_selected_second` — second item selected
@@ -180,6 +180,8 @@ Foundation for all UI tests. Provides:
 - `find_file_path_selected_highlight` — path line highlighted for file creation
 - `find_file_path_selected_with_matching_folder` — path selected even when folder matches name
 - `find_file_no_matches_path_auto_selected` — path auto-selected when no matches
+- `find_file_path_selected_existing_name_shows_entries` — conflict visible when name matches existing entry
+- `find_file_already_exists_error_with_overlay` — error message shown with overlay still open
 
 ### palette.rs (11 tests)
 - `palette_all_items` — all palette items visible

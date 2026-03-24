@@ -595,3 +595,92 @@ fn find_file_no_matches_path_auto_selected() {
          NORMAL  main.rs                                                            1:1
         SPC for leader | : for commands | SPC q q to quit"#]]);
 }
+
+#[test]
+fn find_file_path_selected_existing_name_shows_entries() {
+    // When the user types a name matching an existing entry and selects the path line,
+    // the matching entry should still be visible so the user sees the conflict.
+    // The editor refuses to create the file if the path already exists.
+    let mut ff = make_find_file("/test", vec![
+        (".", true, 0),
+        ("src", true, 0),
+        ("main.rs", false, 100),
+    ]);
+    ff.input = "main.rs".to_string();
+    ff.filtered = vec![2]; // "main.rs" matches
+    ff.path_selected = true; // User pressed Up to select path line
+    let buf = make_buffer("hello\n", "main.rs");
+    let state = RenderState::default()
+        .with_buffer(buf)
+        .with_find_file(ff);
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+          1  hello
+          ~
+          ~
+          ~             ┌ Find File ───────────────────────────────────┐
+          ~             │> /test\main.rs                               │
+          ~             │main.rs                                       │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             └──────────────────────────────────────────────┘
+          ~
+          ~
+         NORMAL  main.rs                                                            1:1
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn find_file_already_exists_error_with_overlay() {
+    // After a failed creation attempt (path exists), the status message shows
+    // the error while find-file remains open for the user to change the name.
+    let mut ff = make_find_file("/test", vec![
+        (".", true, 0),
+        ("src", true, 0),
+    ]);
+    ff.input = "src".to_string();
+    ff.filtered = vec![1]; // "src" folder matches
+    ff.path_selected = true;
+    let buf = make_buffer("hello\n", "main.rs");
+    let state = RenderState::default()
+        .with_buffer(buf)
+        .with_find_file(ff)
+        .with_status("\"src\" already exists");
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+          1  hello
+          ~
+          ~
+          ~             ┌ Find File ───────────────────────────────────┐
+          ~             │> /test\src                                   │
+          ~             │src/                                          │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             │                                              │
+          ~             └──────────────────────────────────────────────┘
+          ~
+          ~
+         NORMAL  main.rs                                                            1:1
+        "src" already exists"#]]);
+}
