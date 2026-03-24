@@ -150,7 +150,7 @@ pub struct FindFileState {
     /// Selected index within filtered results.
     pub selected: usize,
     /// Remembered cursor positions for visited directories.
-    dir_cursor_cache: HashMap<PathBuf, usize>,
+    pub dir_cursor_cache: HashMap<PathBuf, usize>,
 }
 
 impl FindFileState {

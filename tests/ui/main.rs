@@ -1,0 +1,12 @@
+mod helpers;
+mod welcome;
+mod tab_bar;
+mod status_line;
+mod command_line;
+mod editor_content;
+mod pane_layout;
+mod file_browser;
+mod find_file;
+mod palette;
+mod recent_picker;
+mod integration;

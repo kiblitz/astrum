@@ -427,6 +427,10 @@ impl PaneLayout {
         self.panes.iter().find(|p| p.id == id)
     }
 
+    pub fn pane_by_id_mut(&mut self, id: usize) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|p| p.id == id)
+    }
+
     /// Split the active pane. Returns the new pane's id.
     pub fn split(&mut self, direction: SplitDirection) -> usize {
         let active = self.active_pane();
