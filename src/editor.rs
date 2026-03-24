@@ -1528,7 +1528,13 @@ impl Editor {
                 let text = buf.text_snapshot();
                 let path = path.clone();
                 let name = buf.name.clone();
-                match tokio::task::spawn_blocking(move || std::fs::write(&path, text))
+                match tokio::task::spawn_blocking(move || {
+                    // Ensure parent directory exists (needed for newly created files).
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, text)
+                })
                     .await?
                 {
                     Ok(()) => {
@@ -1545,7 +1551,7 @@ impl Editor {
                         self.status_message = format!("Saved: {}", name);
                     }
                     Err(e) => {
-                        self.status_message = format!("Error saving: {}", e);
+                        self.status_message = format!("Error saving {}: {}", name, e);
                     }
                 }
             } else {
