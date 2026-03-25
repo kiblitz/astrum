@@ -1427,10 +1427,45 @@ impl Editor {
             }
             Action::CloseBuffer => {
                 let pane_id = self.pane_layout.active_id;
-                if self.terminals.contains_key(&pane_id) {
-                    self.close_current_terminal();
-                } else {
-                    self.close_current_buffer(false);
+                let mut blocked = false;
+                // Delete the content (buffer or terminal) and remove from recents.
+                if let Some(mut term) = self.terminals.remove(&pane_id) {
+                    let term_id = term.id;
+                    term.kill();
+                    self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
+                } else if let Some(buf_id) = self.pane_layout.active_pane().buffer_id {
+                    if let Some(buf_idx) = self.buffers.iter().position(|b| b.id == buf_id) {
+                        if self.buffers[buf_idx].modified {
+                            self.status_message = "Buffer has unsaved changes. Use :bd! to force close".into();
+                            blocked = true;
+                        } else {
+                            if let Some(ref path) = self.buffers[buf_idx].path.clone() {
+                                let clean = strip_unc_prefix(
+                                    &std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+                                );
+                                self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+                            }
+                            let removed = self.buffers.remove(buf_idx);
+                            let removed_id = removed.id;
+                            self.highlight_cache.invalidate(removed_id);
+                            self.highlight_engine.remove_buffer(removed_id);
+                            self.swap_manager.unregister(removed_id);
+                            // Clear this buffer from any other panes still showing it.
+                            for pid in self.pane_layout.root.pane_ids() {
+                                if let Some(pane) = self.pane_layout.pane_by_id_mut(pid) {
+                                    if pane.buffer_id == Some(removed_id) {
+                                        pane.buffer_id = None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !blocked {
+                    // Close the pane (same as SPC w d).
+                    self.pane_layout.close_active();
+                    self.file_browsers.remove(&pane_id);
+                    self.jump_history.remove(&pane_id);
                 }
             }
 
@@ -1901,23 +1936,6 @@ impl Editor {
         }
     }
 
-    /// Close the terminal on the active pane. Kills the terminal, removes it
-    /// from recents, and jumps back in history.
-    fn close_current_terminal(&mut self) {
-        let pane_id = self.pane_layout.active_id;
-        if let Some(mut term) = self.terminals.remove(&pane_id) {
-            let term_id = term.id;
-            term.kill();
-            // Remove from recents.
-            self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
-            // Try to restore from jump history (allow stealing from other panes).
-            let stacks = self.jump_history.entry(pane_id).or_insert_with(|| (Vec::new(), Vec::new()));
-            if let Some(pos) = stacks.0.pop() {
-                self.restore_jump(pos);
-            }
-            // If nothing was restored, the pane shows the welcome screen.
-        }
-    }
 
     fn close_current_buffer(&mut self, force: bool) {
         if self.buffers.is_empty() || self.active_buffer_idx().is_none() {
