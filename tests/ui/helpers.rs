@@ -1,7 +1,7 @@
 use astrum::action::SearchDirection;
 use astrum::buffer::Buffer;
 use astrum::editor::{
-    BufferSearchMatches, FindFileState, PaletteItem, PaletteState, RecentItem, RecentPickerState,
+    BufferSearchMatches, FindFileState, PaletteItem, PaletteState, RecentItem, RecentItemKind, RecentPickerState,
     SearchState,
 };
 use astrum::file_browser::{DirEntry, FileBrowser};
@@ -280,10 +280,16 @@ pub fn make_palette(items: Vec<(&str, &str, astrum::action::Action)>) -> Palette
 pub fn make_recent_picker(items: Vec<(&str, bool)>) -> RecentPickerState {
     let recent_items: Vec<RecentItem> = items
         .into_iter()
-        .map(|(display, is_dir)| RecentItem {
-            path: PathBuf::from(display),
-            display: display.to_string(),
-            is_dir,
+        .map(|(display, is_dir)| {
+            let kind = if is_dir {
+                RecentItemKind::Directory(PathBuf::from(display))
+            } else {
+                RecentItemKind::File(PathBuf::from(display))
+            };
+            RecentItem {
+                display: display.to_string(),
+                kind,
+            }
         })
         .collect();
     let filtered = (0..recent_items.len()).collect();

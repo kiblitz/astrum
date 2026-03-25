@@ -1238,7 +1238,7 @@ impl Renderer {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Recent Files ")
+            .title(" Recent ")
             .border_style(Style::default().fg(Color::Cyan));
 
         let inner = block.inner(popup_area);
@@ -1276,7 +1276,10 @@ impl Renderer {
                 Style::default()
             };
 
-            let icon = if item.is_dir { "/" } else { "" };
+            let icon = match &item.kind {
+                crate::editor::RecentItemKind::Directory(_) => "/",
+                _ => "",
+            };
             let name = format!("{}{}", item.display, icon);
 
             // Pad to full width (matches find-file pattern).
@@ -1292,7 +1295,7 @@ impl Renderer {
 
         if rp.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  No recent files",
+                "  No recent panes",
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
             )));
         }

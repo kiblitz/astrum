@@ -65,7 +65,15 @@ impl TerminalSession {
             pixel_height: 0,
         })?;
 
-        let cmd = if let Some(sh) = shell {
+        let default_shell: Option<String> = if shell.is_some() {
+            None
+        } else if cfg!(windows) {
+            Some("powershell".into())
+        } else {
+            std::env::var("SHELL").ok()
+        };
+        let shell_name = shell.or(default_shell.as_deref());
+        let cmd = if let Some(sh) = shell_name {
             let mut cmd = CommandBuilder::new(sh);
             cmd.cwd(std::env::current_dir().unwrap_or_default());
             cmd

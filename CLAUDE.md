@@ -218,12 +218,16 @@ Embedded terminal emulator using PTY + VTE parsing.
 - **Architecture**: `TerminalSession` in `terminal.rs` owns a PTY child process, a character grid (`Vec<Vec<Cell>>`), and a VTE parser. Background reader thread sends PTY output via `tokio::sync::mpsc` channel to the editor event loop.
 - **Rendering**: Terminal is **pane content** (like file browsers). `terminals: HashMap<usize, TerminalSession>` keyed by pane ID. Renderer priority: terminal > file browser > buffer > welcome.
 - **Vim-style modes**: Reuses existing Normal/Insert modes (no separate `Mode::Terminal`). In **Insert mode**, all keys are sent directly to the PTY (Esc returns to Normal). In **Normal mode**, all normal editor commands work (SPC leader, `:` commands, motions).
-- **Commands**: `:term` / `:terminal` opens a terminal, optionally with a shell argument (`:term bash`). `Action::OpenTerminal` is the action variant.
+- **Keybinding**: `SPC !` opens a terminal. `:term` is not supported — use the keybinding.
+- **Default shell**: PowerShell on Windows, `$SHELL` on Unix, fallback to system default.
 - **PTY management**: `portable-pty` crate for cross-platform PTY spawning (ConPTY on Windows, Unix PTYs). `vte` crate for VT100 escape sequence parsing.
 - **VTE support**: SGR colors (16, 256, true color RGB), cursor movement, erase operations, scroll regions, save/restore cursor, window title (OSC), bold/italic/underline/reverse/strikethrough modifiers.
-- **Lifecycle**: Terminals are killed when their pane is closed (`quit_current`) and when the editor exits (`cleanup`). Child exit is detected via `check_exit()` polling on output receive. Exit message shown in grid and status line.
-- **Resize**: `Event::Resize` propagates to all terminal sessions. Grid is resized and PTY notified.
+- **Lifecycle**: Terminals are killed when their pane is closed (`quit_current`), explicitly closed (`SPC b d`), or when the editor exits (`cleanup`). Child exit is detected via `check_exit()` polling on output receive. Exit message shown in grid and status line.
+- **Detach/reattach**: Navigating away from a terminal (opening a file, file browser, etc.) **detaches** it — the PTY process stays alive and the grid content is preserved. `detached_terminals: HashMap<usize, TerminalSession>` stores detached sessions. Jump history and the recent picker can reattach a detached terminal to any pane. `take_terminal_by_id()` searches both detached storage and other panes.
+- **Recent panes**: The recent picker (`SPC b b`) tracks files, directories, and terminals. `recent_panes: Vec<RecentPane>` replaces the old `recent_paths`. Terminal entries show live title and "(exited)" status. `SPC b d` on a terminal kills it and removes it from recents.
+- **Resize**: `Event::Resize` propagates to all terminal sessions (attached and detached). Grid is resized and PTY notified.
 - **Status line**: Shows "TERMINAL" mode indicator (green bg in Insert, blue in Normal), terminal title, and exit info if process ended.
+- **TODO**: When stealing a terminal from another pane via recent picker or jump history, the donor pane should jump back in its own history instead of showing the welcome screen. Requires cascading jump-back that avoids further steals.
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.

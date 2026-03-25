@@ -352,7 +352,7 @@ fn full_frame_recent_picker_overlay() {
           1  fn main() {}
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │src/main.rs                                   │
           ~             │src/lib.rs                                    │

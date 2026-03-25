@@ -96,9 +96,22 @@ pub struct RecentPickerState {
 }
 
 pub struct RecentItem {
-    pub path: PathBuf,
     pub display: String,
-    pub is_dir: bool,
+    pub kind: RecentItemKind,
+}
+
+#[derive(Clone)]
+pub enum RecentItemKind {
+    File(PathBuf),
+    Directory(PathBuf),
+    Terminal { term_id: usize },
+}
+
+/// An entry in the recent panes list.
+#[derive(Clone)]
+enum RecentPane {
+    Path(PathBuf),
+    Terminal { term_id: usize, title: String },
 }
 
 impl RecentPickerState {
@@ -247,6 +260,8 @@ enum JumpPosition {
         selected: usize,
         scroll_offset: usize,
     },
+    /// Terminal was open on this pane. Stores the terminal session ID for reattachment.
+    Terminal { term_id: usize },
 }
 
 /// Per-buffer search matches.
@@ -317,12 +332,14 @@ pub struct Editor {
     comment_syntax: HashMap<String, crate::config::CommentSyntax>,
     /// Config loading error to display on the welcome screen.
     config_error: Option<String>,
-    /// Recently opened files and folders (most recent first).
-    recent_paths: Vec<PathBuf>,
+    /// Recently visited panes (most recent first) — files, directories, and terminals.
+    recent_panes: Vec<RecentPane>,
     /// Recent files picker overlay.
     recent_picker: Option<RecentPickerState>,
     /// Per-pane terminal sessions. Key is the pane id.
     pub terminals: HashMap<usize, crate::terminal::TerminalSession>,
+    /// Detached terminal sessions (not assigned to any pane). Key is terminal session id.
+    detached_terminals: HashMap<usize, crate::terminal::TerminalSession>,
     /// Channel for receiving terminal output from background reader threads.
     terminal_rx: tokio::sync::mpsc::UnboundedReceiver<(usize, Vec<u8>)>,
     /// Sender side (cloned per terminal reader thread).
@@ -551,9 +568,10 @@ impl Editor {
             last_macro_register: None,
             comment_syntax,
             config_error: None,
-            recent_paths: Vec::new(),
+            recent_panes: Vec::new(),
             recent_picker: None,
             terminals: HashMap::new(),
+            detached_terminals: HashMap::new(),
             terminal_rx: rx,
             terminal_tx: tx,
         })
@@ -563,13 +581,61 @@ impl Editor {
         self.config_error = Some(err);
     }
 
-    /// Record a path as recently opened (most recent first, deduplicated).
+    /// Record a path as recently visited (most recent first, deduplicated).
     fn push_recent(&mut self, path: PathBuf) {
         let canonical = std::fs::canonicalize(&path).unwrap_or(path);
         let clean = strip_unc_prefix(&canonical);
-        self.recent_paths.retain(|p| p != &clean);
-        self.recent_paths.insert(0, clean);
-        self.recent_paths.truncate(100);
+        self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+        self.recent_panes.insert(0, RecentPane::Path(clean));
+        self.recent_panes.truncate(100);
+    }
+
+    /// Record a terminal as recently visited.
+    fn push_recent_terminal(&mut self, term_id: usize, title: String) {
+        self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
+        self.recent_panes.insert(0, RecentPane::Terminal { term_id, title });
+        self.recent_panes.truncate(100);
+    }
+
+    /// Build the list of recent items for the picker.
+    fn build_recent_items(&self) -> Vec<RecentItem> {
+        // Collect paths for shortest_unique_suffixes.
+        let paths: Vec<PathBuf> = self.recent_panes.iter().filter_map(|r| {
+            if let RecentPane::Path(p) = r { Some(p.clone()) } else { None }
+        }).collect();
+        let suffixes = shortest_unique_suffixes(&paths);
+
+        let mut suffix_iter = suffixes.into_iter();
+        self.recent_panes.iter().map(|r| {
+            match r {
+                RecentPane::Path(p) => {
+                    let display = suffix_iter.next().unwrap_or_default();
+                    let kind = if p.is_dir() {
+                        RecentItemKind::Directory(p.clone())
+                    } else {
+                        RecentItemKind::File(p.clone())
+                    };
+                    RecentItem { display, kind }
+                }
+                RecentPane::Terminal { term_id, title: saved_title } => {
+                    // Look up the live title from the actual terminal session.
+                    let live_term = self.terminals.values().find(|t| t.id == *term_id)
+                        .or_else(|| self.detached_terminals.get(term_id));
+                    let (title, exited) = match live_term {
+                        Some(t) => {
+                            let t_title = if t.title.is_empty() { saved_title.as_str() } else { &t.title };
+                            (t_title.to_string(), t.exited.is_some())
+                        }
+                        None => (saved_title.clone(), true),
+                    };
+                    let status = if exited { " (exited)" } else { "" };
+                    RecentItem {
+                        display: format!("[terminal] {}{}", title, status),
+                        kind: RecentItemKind::Terminal { term_id: *term_id },
+                    }
+                }
+            }
+        }).collect()
     }
 
     // -- Helper methods --
@@ -596,6 +662,8 @@ impl Editor {
     /// Open a file asynchronously. If a buffer for this path already exists,
     /// switch to it instead of creating a duplicate.
     pub async fn open_file(&mut self, path: &str) -> Result<()> {
+        // Detach any terminal on this pane (keep it alive for jump-back).
+        self.detach_terminal_from_active_pane();
         let path_buf = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
         self.push_recent(path_buf.clone());
 
@@ -683,7 +751,10 @@ impl Editor {
                 self.pane_layout.active_pane_mut().buffer_id = None;
                 // Remove any file browser on this pane.
                 self.file_browsers.remove(&pane_id);
+                let tid = session.id;
+                let title = session.title.clone();
                 self.terminals.insert(pane_id, session);
+                self.push_recent_terminal(tid, title);
                 self.input.mode = Mode::Insert;
                 self.status_message = "Terminal opened".into();
             }
@@ -704,6 +775,9 @@ impl Editor {
     }
 
     async fn open_file_browser(&mut self, dir: PathBuf) -> Result<()> {
+        // Detach any terminal on this pane (keep it alive for jump-back).
+        self.detach_terminal_from_active_pane();
+        let pane_id = self.pane_layout.active_id;
         self.push_recent(dir.clone());
         let mut fb = FileBrowser::new(dir.clone());
 
@@ -711,7 +785,6 @@ impl Editor {
             tokio::task::spawn_blocking(move || scan_directory(&dir)).await?;
         fb.set_entries(entries);
 
-        let pane_id = self.pane_layout.active_id;
         self.file_browsers.insert(pane_id, fb);
         Ok(())
     }
@@ -896,6 +969,9 @@ impl Editor {
                                 for (_, term) in &mut self.terminals {
                                     term.resize(term_rows, w);
                                 }
+                                for (_, term) in &mut self.detached_terminals {
+                                    term.resize(term_rows, w);
+                                }
                             }
                             _ => {}
                         }
@@ -903,12 +979,20 @@ impl Editor {
                 }
                 // Terminal output from background reader threads.
                 Some((term_id, data)) = self.terminal_rx.recv() => {
+                    let mut found = false;
                     for (_, term) in &mut self.terminals {
                         if term.id == term_id {
                             term.process_output(&data);
-                            // Check if the child has exited after processing output.
                             term.check_exit();
+                            found = true;
                             break;
+                        }
+                    }
+                    if !found {
+                        // Check detached terminals too.
+                        if let Some(term) = self.detached_terminals.get_mut(&term_id) {
+                            term.process_output(&data);
+                            term.check_exit();
                         }
                     }
                 }
@@ -1330,13 +1414,7 @@ impl Editor {
             // Buffer management
             Action::OpenRecentPicker => {
                 if self.recent_picker.is_none() {
-                    let suffixes = shortest_unique_suffixes(&self.recent_paths);
-                    let items: Vec<RecentItem> = self.recent_paths.iter()
-                        .zip(suffixes)
-                        .map(|(p, display)| {
-                            let is_dir = p.is_dir();
-                            RecentItem { path: p.clone(), display, is_dir }
-                        }).collect();
+                    let items = self.build_recent_items();
                     self.recent_picker = Some(RecentPickerState::new(items));
                     execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
@@ -1348,7 +1426,12 @@ impl Editor {
                 self.switch_buffer_by_offset(-1);
             }
             Action::CloseBuffer => {
-                self.close_current_buffer(false);
+                let pane_id = self.pane_layout.active_id;
+                if self.terminals.contains_key(&pane_id) {
+                    self.close_current_terminal();
+                } else {
+                    self.close_current_buffer(false);
+                }
             }
 
             // Window management
@@ -1777,10 +1860,6 @@ impl Editor {
             Some("new") => {
                 self.new_scratch_buffer();
             }
-            Some("term") | Some("terminal") => {
-                let shell = if parts.len() > 1 { Some(parts[1]) } else { None };
-                self.open_terminal(shell)?;
-            }
             Some(c) => {
                 if let Ok(n) = c.parse::<usize>() {
                     if n > 0 {
@@ -1822,6 +1901,24 @@ impl Editor {
         }
     }
 
+    /// Close the terminal on the active pane. Kills the terminal, removes it
+    /// from recents, and jumps back in history.
+    fn close_current_terminal(&mut self) {
+        let pane_id = self.pane_layout.active_id;
+        if let Some(mut term) = self.terminals.remove(&pane_id) {
+            let term_id = term.id;
+            term.kill();
+            // Remove from recents.
+            self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
+            // Try to restore from jump history (allow stealing from other panes).
+            let stacks = self.jump_history.entry(pane_id).or_insert_with(|| (Vec::new(), Vec::new()));
+            if let Some(pos) = stacks.0.pop() {
+                self.restore_jump(pos);
+            }
+            // If nothing was restored, the pane shows the welcome screen.
+        }
+    }
+
     fn close_current_buffer(&mut self, force: bool) {
         if self.buffers.is_empty() || self.active_buffer_idx().is_none() {
             if self.pane_layout.is_single() && self.confirm_double_quit() {
@@ -1847,6 +1944,13 @@ impl Editor {
         self.highlight_cache.invalidate(removed_id);
         self.highlight_engine.remove_buffer(removed_id);
         self.swap_manager.unregister(removed_id);
+        // Remove from recents.
+        if let Some(ref path) = removed.path {
+            let clean = strip_unc_prefix(
+                &std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+            );
+            self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+        }
 
         let active_id = self.pane_layout.active_id;
 
@@ -1868,7 +1972,7 @@ impl Editor {
                         }
                         // else: stale entry, continue searching
                     }
-                    JumpPosition::Browser { .. } => {
+                    JumpPosition::Browser { .. } | JumpPosition::Terminal { .. } => {
                         self.restore_jump(pos);
                         restored = true;
                         break;
@@ -2002,20 +2106,40 @@ impl Editor {
             KeyCode::Enter => {
                 let selected = self.recent_picker.as_ref()
                     .and_then(|rp| rp.selected_item())
-                    .map(|item| (item.path.clone(), item.is_dir));
+                    .map(|item| item.kind.clone());
 
                 self.recent_picker = None;
                 execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
 
-                if let Some((path, is_dir)) = selected {
-                    // Clear file browser on this pane before switching content.
+                if let Some(kind) = selected {
                     let pane_id = self.pane_layout.active_id;
                     self.file_browsers.remove(&pane_id);
                     self.push_jump();
-                    if is_dir {
-                        self.open_file_browser(path).await?;
-                    } else {
-                        self.open_file(path.to_string_lossy().as_ref()).await?;
+                    match kind {
+                        RecentItemKind::Directory(path) => {
+                            self.open_file_browser(path).await?;
+                        }
+                        RecentItemKind::File(path) => {
+                            self.open_file(path.to_string_lossy().as_ref()).await?;
+                        }
+                        RecentItemKind::Terminal { term_id } => {
+                            // Reattach the terminal. It could be detached, attached to
+                            // another pane, or already on this pane.
+                            // TODO: When stealing a terminal from another pane, that pane
+                            // should jump back in history instead of showing the welcome
+                            // screen. This requires jumping back until we find a view that
+                            // doesn't itself steal from another pane (to avoid cascading).
+                            self.detach_terminal_from_active_pane();
+                            // Try detached first, then steal from another pane.
+                            let term = self.take_terminal_by_id(term_id);
+                            if let Some(term) = term {
+                                self.pane_layout.active_pane_mut().buffer_id = None;
+                                self.terminals.insert(pane_id, term);
+                                self.input.mode = Mode::Insert;
+                            } else {
+                                let _ = self.open_terminal(None);
+                            }
+                        }
                     }
                 }
             }
@@ -2410,9 +2534,33 @@ impl Editor {
     }
 
     /// Capture the current state as a jump position.
+    /// Find and remove a terminal by its session ID from detached storage or any pane.
+    fn take_terminal_by_id(&mut self, term_id: usize) -> Option<crate::terminal::TerminalSession> {
+        self.detached_terminals.remove(&term_id).or_else(|| {
+            let other_pane = self.terminals.iter()
+                .find(|(_, t)| t.id == term_id)
+                .map(|(&pid, _)| pid);
+            if let Some(pid) = other_pane {
+                self.terminals.remove(&pid)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Detach the terminal from the active pane, moving it to detached storage.
+    fn detach_terminal_from_active_pane(&mut self) {
+        let pane_id = self.pane_layout.active_id;
+        if let Some(term) = self.terminals.remove(&pane_id) {
+            self.detached_terminals.insert(term.id, term);
+        }
+    }
+
     fn current_jump_position(&self) -> Option<JumpPosition> {
         let pane_id = self.pane_layout.active_id;
-        if let Some(fb) = self.file_browsers.get(&pane_id) {
+        if let Some(term) = self.terminals.get(&pane_id) {
+            Some(JumpPosition::Terminal { term_id: term.id })
+        } else if let Some(fb) = self.file_browsers.get(&pane_id) {
             Some(JumpPosition::Browser {
                 dir: fb.current_dir.clone(),
                 selected: fb.selected,
@@ -2513,6 +2661,18 @@ impl Editor {
                 fb.selected = if selected < count { selected } else { count.saturating_sub(1) };
                 fb.scroll_offset = scroll_offset;
                 self.file_browsers.insert(pane_id, fb);
+            }
+            JumpPosition::Terminal { term_id } => {
+                let term = self.take_terminal_by_id(term_id);
+                if let Some(term) = term {
+                    self.file_browsers.remove(&pane_id);
+                    self.pane_layout.active_pane_mut().buffer_id = None;
+                    self.terminals.insert(pane_id, term);
+                    self.input.mode = Mode::Insert;
+                } else {
+                    // Terminal was killed — open a fresh one.
+                    let _ = self.open_terminal(None);
+                }
             }
         }
     }
@@ -3135,6 +3295,9 @@ impl Editor {
 
     fn cleanup(&mut self) {
         for (_, mut term) in self.terminals.drain() {
+            term.kill();
+        }
+        for (_, mut term) in self.detached_terminals.drain() {
             term.kill();
         }
         self.swap_manager.cleanup_all();

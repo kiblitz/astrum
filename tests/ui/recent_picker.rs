@@ -14,9 +14,9 @@ fn recent_empty_list() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
-          ~             │  No recent files                             │
+          ~             │  No recent panes                             │
           ~             │                                              │
           ~             │                                              │
           ~             │                                              │
@@ -53,7 +53,7 @@ fn recent_with_files() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │src/main.rs                                   │
           ~             │src/lib.rs                                    │
@@ -92,7 +92,7 @@ fn recent_with_dirs() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │src/                                          │
           ~             │tests/                                        │
@@ -132,7 +132,7 @@ fn recent_selected_second() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │main.rs                                       │
           ~             │lib.rs                                        │
@@ -174,7 +174,7 @@ fn recent_with_query() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │> lib                                         │
           ~             │lib.rs                                        │
           ~             │                                              │
@@ -209,7 +209,7 @@ fn recent_small_terminal() {
     let actual = render_to_string(40, 12, &state);
     check(&actual, expect![[r#"
           main.rs
-          ┌ Recent Files ────────────────────┐
+          ┌ Recent ──────────────────────────┐
           │>                                 │
           │main.rs                           │
           │lib.rs                            │
@@ -235,7 +235,7 @@ fn recent_single_item() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │src/main.rs                                   │
           ~             │                                              │
@@ -274,7 +274,7 @@ fn recent_all_dirs() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │src/                                          │
           ~             │tests/                                        │
@@ -314,9 +314,9 @@ fn recent_no_matches_after_filter() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │> zzz                                         │
-          ~             │  No recent files                             │
+          ~             │  No recent panes                             │
           ~             │                                              │
           ~             │                                              │
           ~             │                                              │
@@ -355,7 +355,7 @@ fn recent_many_items() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │file_00.rs                                    │
           ~             │file_01.rs                                    │
@@ -395,7 +395,7 @@ fn recent_selected_last() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │a.rs                                          │
           ~             │b.rs                                          │
@@ -433,7 +433,7 @@ fn recent_long_paths() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │src/very/deeply/nested/directory/structure/mai│
           ~             │another/long/path/to/some/module/lib.rs       │
@@ -472,7 +472,7 @@ fn recent_mixed_long_short() {
           1  hello
           ~
           ~
-          ~             ┌ Recent Files ────────────────────────────────┐
+          ~             ┌ Recent ──────────────────────────────────────┐
           ~             │>                                             │
           ~             │a.rs                                          │
           ~             │src/deeply/nested/module.rs                   │
