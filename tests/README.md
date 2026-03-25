@@ -135,7 +135,7 @@ Foundation for all UI tests. Provides:
 - `editor_very_wide_terminal` — 160-column terminal
 - `editor_insert_mode_display` — insert mode status line
 
-### pane_layout.rs (13 tests)
+### pane_layout.rs (48 tests)
 - `single_pane_full_width` — single pane fills terminal
 - `vertical_split_two_panes` — vertical split with separator `│`
 - `horizontal_split_two_panes` — horizontal split with separator `─`
@@ -149,6 +149,26 @@ Foundation for all UI tests. Provides:
 - `split_with_modified_buffers` — modified indicator in split panes
 - `split_active_right_pane` — active pane on right side
 - `three_horizontal_splits` — three horizontal panes stacked
+- `move_bottom_pane_right_in_horizontal_split` — move bottom pane right (opposite axis)
+- `move_bottom_pane_left_in_horizontal_split` — move bottom pane left (opposite axis)
+- `move_right_pane_down_in_vertical_split` — move right pane down (opposite axis)
+- `move_top_right_pane_down_in_nested_layout` — move nested pane down to outer edge
+- `move_top_left_pane_down_in_nested_layout` — move nested pane down to outer edge
+- `move_bottom_pane_up_in_nested_layout` — move pane up past nested split
+- `move_left_pane_right_in_nested_layout` — move nested pane right to outer edge
+- `move_pane_down_simple_horizontal_split` — swap two panes down
+- `move_pane_up_simple_horizontal_split` — swap two panes up
+- `move_pane_right_simple_vertical_split` — swap two panes right
+- `move_pane_left_simple_vertical_split` — swap two panes left
+- `move_pane_in_three_way_vertical_left_to_right` — move first to end in 3-way
+- `move_pane_in_three_way_vertical_right_to_left` — move last to start in 3-way
+- `move_middle_pane_right_in_three_way` — move middle pane right
+- `move_middle_pane_left_in_three_way` — move middle pane left
+- `move_top_right_pane_left_in_nested_layout` — move within same-axis nested split
+- `move_pane_down_across_axis_four_panes` — 2x2 grid, move pane to bottom
+- `move_top_right_down_in_three_row_layout` — 3-row layout, move nested pane to bottom
+- `move_nested_pane_down_in_vertical_root` — move within column of vertical root
+- `move_pane_across_axis_then_back` — cross-axis pane movement
 
 ### file_browser.rs (14 tests)
 - `browser_empty_directory` — empty directory message

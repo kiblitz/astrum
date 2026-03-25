@@ -61,6 +61,21 @@ pub enum LayoutNode {
 }
 
 impl LayoutNode {
+    /// Debug representation of tree structure (e.g. "H(V(1,2),3)").
+    pub fn debug_tree(&self) -> String {
+        match self {
+            LayoutNode::Leaf(id) => format!("{id}"),
+            LayoutNode::Split { direction, children } => {
+                let dir = match direction {
+                    SplitDirection::Vertical => "V",
+                    SplitDirection::Horizontal => "H",
+                };
+                let kids: Vec<String> = children.iter().map(|c| c.debug_tree()).collect();
+                format!("{dir}({})", kids.join(","))
+            }
+        }
+    }
+
     /// Returns all pane ids in left-to-right / top-to-bottom order.
     pub fn pane_ids(&self) -> Vec<usize> {
         match self {
@@ -135,15 +150,15 @@ pub fn remove_from_tree(node: &mut LayoutNode, target_id: usize) -> bool {
 // Pane movement — tree restructuring
 // ---------------------------------------------------------------------------
 
-/// Find (parent_direction, sibling_pane_id, parent_child_count) for a pane.
-fn find_parent_info(node: &LayoutNode, pane_id: usize) -> Option<(SplitDirection, usize, usize)> {
+/// Returns (parent_direction, sibling_pane_id, parent_child_count, pane_index_in_parent).
+fn find_parent_info(node: &LayoutNode, pane_id: usize) -> Option<(SplitDirection, usize, usize, usize)> {
     match node {
         LayoutNode::Leaf(_) => None,
         LayoutNode::Split { direction, children } => {
             if let Some(pane_idx) = children.iter().position(|c| matches!(c, LayoutNode::Leaf(id) if *id == pane_id)) {
                 let sibling_idx = if pane_idx > 0 { pane_idx - 1 } else { 1.min(children.len() - 1) };
                 let sibling_id = children[sibling_idx].pane_ids().into_iter().next().unwrap_or(0);
-                return Some((*direction, sibling_id, children.len()));
+                return Some((*direction, sibling_id, children.len(), pane_idx));
             }
             for child in children {
                 if let Some(result) = find_parent_info(child, pane_id) {
@@ -320,34 +335,42 @@ pub fn move_pane_in_tree(root: &mut LayoutNode, pane_id: usize, direction: Focus
     let at_end = matches!(direction, FocusDirection::Right | FocusDirection::Down);
 
     // Gather info before removal
-    let (parent_dir, sibling_id, child_count) = match find_parent_info(root, pane_id) {
+    let (parent_dir, _sibling_id, child_count, pane_idx) = match find_parent_info(root, pane_id) {
         Some(info) => info,
         None => return false,
     };
     let same_axis = parent_dir == target_dir;
     let will_collapse = child_count == 2;
+    // Was the pane already at the edge of its parent in the move direction?
+    let at_parent_edge = (at_end && pane_idx == child_count - 1)
+        || (!at_end && pane_idx == 0);
+
+    // Compute the path to the pane BEFORE removal — the parent's path is one level up.
+    let pane_path_before = find_leaf_path(root, pane_id);
+    let parent_path_before = if !pane_path_before.is_empty() {
+        pane_path_before[..pane_path_before.len() - 1].to_vec()
+    } else {
+        vec![]
+    };
 
     // Remove pane from tree (collapses single-child splits)
     if !remove_from_tree(root, pane_id) {
         return false;
     }
 
-    // Find sibling in the modified tree to locate insertion point
-    let sibling_path = find_leaf_path(root, sibling_id);
-
-    // Path to the "old parent remnant" — what remains of the pane's original container
-    let ref_path = if will_collapse {
-        // Parent collapsed: sibling IS the remnant (took the parent's position)
-        sibling_path
-    } else if !sibling_path.is_empty() {
-        // Parent survived: it's the sibling's parent
-        sibling_path[..sibling_path.len() - 1].to_vec()
-    } else {
-        vec![]
-    };
+    // Path to the "old parent remnant" — what remains of the pane's original container.
+    // When the parent collapsed (2 children), the sibling took the parent's position,
+    // so ref_path = the old parent's path (which is now where the sibling sits).
+    // When the parent survived (3+ children), the parent is still at its old path.
+    let ref_path = parent_path_before;
 
     if same_axis {
-        // Same axis: operate one level above the old parent
+        // Same axis: operate one level above the old parent.
+        // When the parent collapsed (2 children → sibling replaces parent),
+        // ref_path points to the sibling. We want to go one level up so we
+        // reorder within the grandparent. But only if the grandparent is on
+        // the same axis — otherwise, wrap the sibling directly (the pane
+        // should stay adjacent to its former sibling, not jump to a higher level).
         if ref_path.is_empty() {
             // Old parent remnant is root
             let root_has_target =
@@ -370,16 +393,23 @@ pub fn move_pane_in_tree(root: &mut LayoutNode, pane_id: usize, direction: Focus
             let parent_has_target = get_direction_at_path(root, parent_path) == Some(target_dir);
             if parent_has_target {
                 insert_leaf_at_path(root, parent_path, pane_id, at_end);
+            } else if will_collapse && !at_parent_edge {
+                // Parent collapsed and grandparent is on a different axis.
+                // Pane was NOT at the edge → keep it adjacent to its sibling.
+                wrap_node_at_path(root, &ref_path, pane_id, target_dir, at_end);
+            } else if will_collapse && at_parent_edge {
+                // Parent collapsed and pane was at the edge in move direction.
+                // It should escape the parent and wrap the grandparent level.
+                wrap_node_at_path(root, parent_path, pane_id, target_dir, at_end);
             } else {
                 wrap_node_at_path(root, parent_path, pane_id, target_dir, at_end);
             }
         }
     } else {
         // Opposite axis: wrap at the old parent level.
-        // When the parent collapsed, ref_path points to the sibling which
-        // replaced the parent. We need to go one level up so we wrap the
-        // whole group, not just the sibling (which would insert the pane
-        // *inside* the sibling's container instead of alongside it).
+        // When the parent collapsed (will_collapse), ref_path points to the
+        // sibling which replaced the parent. We need to go one level up so
+        // we wrap the whole container, not just the sibling.
         let wrap_path = if will_collapse && !ref_path.is_empty() {
             &ref_path[..ref_path.len() - 1]
         } else {
