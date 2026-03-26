@@ -1939,9 +1939,9 @@ impl Editor {
     fn quit_current(&mut self, force: bool) {
         if !self.pane_layout.is_single() {
             let pane_id = self.pane_layout.active_id;
-            // Kill terminal if this pane has one (closing pane destroys it).
-            if let Some(mut term) = self.pane_layout.active_pane_mut().content.take_terminal() {
-                term.kill();
+            // Detach terminal so it keeps running in the background.
+            if let Some(term) = self.pane_layout.active_pane_mut().content.take_terminal() {
+                self.detached_terminals.insert(term.id, term);
             }
             self.pane_layout.close_active();
             self.jump_history.remove(&pane_id);
