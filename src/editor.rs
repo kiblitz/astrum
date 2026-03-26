@@ -1533,6 +1533,10 @@ impl Editor {
             }
             Action::ClosePane => {
                 let old_id = self.pane_layout.active_id;
+                // Detach terminal so it keeps running in the background.
+                if let Some(term) = self.pane_layout.active_pane_mut().content.take_terminal() {
+                    self.detached_terminals.insert(term.id, term);
+                }
                 self.pane_layout.close_active();
                 self.jump_history.remove(&old_id);
             }
