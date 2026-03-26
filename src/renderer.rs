@@ -207,8 +207,9 @@ impl Renderer {
                         (area, None)
                     };
 
-                    // Store the content height for viewport calculations.
+                    // Store the content dimensions for viewport and terminal resize.
                     pane.height.set(content_area.height);
+                    pane.width.set(content_area.width);
 
                     // Render pane content based on type
                     match &pane.content {
@@ -625,6 +626,10 @@ impl Renderer {
         show_cursor: bool,
     ) {
         use ratatui::text::Line;
+        use ratatui::widgets::Clear;
+
+        // Clear the area first to prevent artifacts from previous frames.
+        frame.render_widget(Clear, area);
 
         for (y, row) in term.grid.iter().enumerate() {
             if y >= area.height as usize {

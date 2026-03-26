@@ -224,6 +224,84 @@ pub fn render_to_string(width: u16, height: u16, state: &RenderState) -> String 
     lines.join("\n")
 }
 
+/// Render two states sequentially on the same terminal backend (simulating a content
+/// transition like terminal→buffer). Returns the string from the SECOND render.
+/// This catches bugs where ratatui's double-buffer diffing leaves stale cells.
+pub fn render_transition_to_string(width: u16, height: u16, before: &RenderState, after: &RenderState) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let renderer = Renderer::new();
+
+    // First render (e.g., terminal content).
+    terminal
+        .draw(|frame| {
+            renderer.render(
+                frame,
+                &before.buffers,
+                &before.pane_layout,
+                &before.mode,
+                &before.command_buffer,
+                &before.status_message,
+                &before.pending_keys,
+                &before.pending_hints,
+                &before.highlight_cache,
+                &before.palette,
+                &before.find_file,
+                &before.search_state,
+                &before.search_buffer,
+                before.search_direction,
+                before.visual_anchor,
+                before.substitute_highlight,
+                before.recording_macro,
+                before.config_error.as_deref(),
+                &before.recent_picker,
+            );
+        })
+        .unwrap();
+
+    // Second render (e.g., buffer content).
+    terminal
+        .draw(|frame| {
+            renderer.render(
+                frame,
+                &after.buffers,
+                &after.pane_layout,
+                &after.mode,
+                &after.command_buffer,
+                &after.status_message,
+                &after.pending_keys,
+                &after.pending_hints,
+                &after.highlight_cache,
+                &after.palette,
+                &after.find_file,
+                &after.search_state,
+                &after.search_buffer,
+                after.search_direction,
+                after.visual_anchor,
+                after.substitute_highlight,
+                after.recording_macro,
+                after.config_error.as_deref(),
+                &after.recent_picker,
+            );
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let mut lines = Vec::new();
+    for y in 0..height {
+        let mut line = String::new();
+        for x in 0..width {
+            let cell = &buf[(x, y)];
+            line.push_str(cell.symbol());
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    while lines.last().map_or(false, |l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
 pub fn check(actual: &str, expect: Expect) {
     expect.assert_eq(actual);
 }

@@ -495,3 +495,116 @@ fn terminal_recording_macro_indicator() {
          TERMINAL   bash
         recording @a SPC for leader | : for commands | SPC q q to quit"#]]);
 }
+
+#[test]
+fn terminal_wider_than_pane_left_split() {
+    // Terminal grid is 80 cols wide, but the left pane is only ~40 cols.
+    let mut state = RenderState::default();
+    let p1 = state.pane_layout.active_id;
+    let term = make_terminal(20, 80, &["$ echo hello world this is a long line", "hello world this is a long line", "$ "], "bash");
+    state.pane_layout.pane_by_id_mut(p1).unwrap().content = PaneContent::Terminal(term);
+
+    let p2 = state.pane_layout.split(SplitDirection::Vertical);
+    let buf = make_buffer("fn main() {}\n", "main.rs");
+    let buf_id = buf.id;
+    state.buffers.push(buf);
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Buffer(buf_id);
+
+    state.pane_layout.active_id = p1;
+    let state = state.with_mode(Mode::Insert);
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+        $ echo hello world this is a long line  │  1  fn main() {}
+        hello world this is a long line         │  ~
+        $                                       │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+                                                │  ~
+         bash                                   │ main.rs
+         TERMINAL   bash
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+#[test]
+fn terminal_wider_than_pane_right_split() {
+    // Buffer on left, oversized terminal on right. Terminal grid is 80 cols but pane is ~39.
+    let state = RenderState::default();
+    let p1 = state.pane_layout.active_id;
+    let buf = make_buffer("fn main() {}\n", "main.rs");
+    let buf_id = buf.id;
+    let mut state = state.with_buffer(buf);
+
+    let p2 = state.pane_layout.split(SplitDirection::Vertical);
+    let term = make_terminal(20, 80, &["$ echo hello world this is a long line", "hello world this is a long line", "$ "], "bash");
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Terminal(term);
+
+    state.pane_layout.active_id = p2;
+    let state = state.with_mode(Mode::Insert);
+    let actual = render_to_string(80, 24, &state);
+    check(&actual, expect![[r#"
+          main.rs
+          1  fn main() {}                       │$ echo hello world this is a long line
+          ~                                     │hello world this is a long line
+          ~                                     │$
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+          ~                                     │
+         main.rs                                │ bash
+         TERMINAL   bash
+        SPC for leader | : for commands | SPC q q to quit"#]]);
+}
+
+#[test]
+fn terminal_to_buffer_transition_no_artifacts() {
+    // Simulate: user has a terminal, then opens a file. The buffer render must be clean
+    // with no leftover terminal content (tests ratatui double-buffer transition).
+    let mut before = RenderState::default();
+    let pane_id = before.pane_layout.active_id;
+    let term = make_terminal(20, 80, &[
+        "$ cargo build",
+        "   Compiling astrum v0.1.0",
+        "    Finished dev [unoptimized] target(s) in 2.5s",
+        "$ ",
+    ], "bash");
+    before.pane_layout.pane_by_id_mut(pane_id).unwrap().content = PaneContent::Terminal(term);
+    before.mode = Mode::Insert;
+
+    // After: same pane now shows a buffer.
+    let mut after = RenderState::default();
+    let buf = make_buffer("fn main() {\n    println!(\"hello\");\n}\n", "main.rs");
+    let after = after.with_buffer(buf);
+
+    let actual = render_transition_to_string(80, 24, &before, &after);
+    // Compare against a fresh render of just the buffer (should be identical).
+    let expected = render_to_string(80, 24, &after);
+    assert_eq!(actual, expected, "Transition from terminal to buffer left artifacts");
+}
+

@@ -658,8 +658,6 @@ impl Editor {
     /// Open a file asynchronously. If a buffer for this path already exists,
     /// switch to it instead of creating a duplicate.
     pub async fn open_file(&mut self, path: &str) -> Result<()> {
-        // Detach any terminal on this pane (keep it alive for jump-back).
-        self.detach_terminal_from_active_pane();
         let path_buf = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
         self.push_recent(path_buf.clone());
 
@@ -670,6 +668,8 @@ impl Editor {
             })
         }) {
             let buf_id = existing.id;
+            // Detach terminal right before switching — no async gap.
+            self.detach_terminal_from_active_pane();
             self.pane_layout.active_pane_mut().switch_buffer(buf_id);
             return Ok(());
         }
@@ -687,6 +687,8 @@ impl Editor {
                 }
                 self.buffers.push(buf);
                 self.request_highlight(buf_id);
+                // Detach terminal right before switching — no async gap.
+                self.detach_terminal_from_active_pane();
                 self.pane_layout.active_pane_mut().switch_buffer(buf_id);
             }
             Err(_) => {
@@ -697,6 +699,8 @@ impl Editor {
                     self.swap_manager.register(buf_id, p, hash);
                 }
                 self.buffers.push(buf);
+                // Detach terminal right before switching — no async gap.
+                self.detach_terminal_from_active_pane();
                 self.pane_layout.active_pane_mut().switch_buffer(buf_id);
                 self.status_message = format!("New file: {}", path);
             }
@@ -854,6 +858,17 @@ impl Editor {
                 })?;
             }
 
+            // Resize terminals to match their actual pane dimensions (now known after render).
+            for pane in &mut self.pane_layout.panes {
+                if let Some(term) = pane.content.as_terminal_mut() {
+                    let h = pane.height.get();
+                    let w = pane.width.get();
+                    if h > 0 && w > 0 && (term.rows != h || term.cols != w) {
+                        term.resize(h, w);
+                    }
+                }
+            }
+
             // Cursor style per mode.
             if self.pane_layout.active_pane().content.is_browser() {
                 execute!(io::stdout(), cursor::SetCursorStyle::SteadyBlock)?;
@@ -949,17 +964,15 @@ impl Editor {
                                     }
                                 }
                             }
-                            Event::Resize(w, h) => {
-                                // Resize all terminal sessions to match their pane area.
-                                // Approximate: subtract status bar and tab bar rows.
-                                let term_rows = h.saturating_sub(3).max(1);
-                                for pane in &mut self.pane_layout.panes {
-                                    if let Some(term) = pane.content.as_terminal_mut() {
-                                        term.resize(term_rows, w);
-                                    }
-                                }
+                            Event::Resize(_w, _h) => {
+                                // Terminal resize is handled after the next render frame,
+                                // when actual per-pane dimensions are known.
+                                // Detached terminals use the full window size as a fallback.
+                                let size = self.terminal.size()?;
+                                let term_rows = size.height.saturating_sub(3).max(1);
+                                let term_cols = size.width.max(1);
                                 for (_, term) in &mut self.detached_terminals {
-                                    term.resize(term_rows, w);
+                                    term.resize(term_rows, term_cols);
                                 }
                             }
                             _ => {}
