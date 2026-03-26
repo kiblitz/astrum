@@ -6,7 +6,7 @@ use astrum::editor::{
 };
 use astrum::file_browser::{DirEntry, FileBrowser};
 use astrum::input::Mode;
-use astrum::pane::PaneLayout;
+use astrum::pane::{PaneContent, PaneLayout};
 use astrum::renderer::Renderer;
 use astrum::syntax::HighlightCache;
 use astrum::terminal::TerminalSession;
@@ -27,7 +27,6 @@ pub struct RenderState {
     pub pending_keys: String,
     pub pending_hints: Vec<(String, String)>,
     pub highlight_cache: HighlightCache,
-    pub file_browsers: HashMap<usize, FileBrowser>,
     pub palette: Option<PaletteState>,
     pub find_file: Option<FindFileState>,
     pub search_state: SearchState,
@@ -38,7 +37,6 @@ pub struct RenderState {
     pub recording_macro: Option<char>,
     pub config_error: Option<String>,
     pub recent_picker: Option<RecentPickerState>,
-    pub terminals: HashMap<usize, TerminalSession>,
 }
 
 impl Default for RenderState {
@@ -52,7 +50,6 @@ impl Default for RenderState {
             pending_keys: String::new(),
             pending_hints: Vec::new(),
             highlight_cache: HighlightCache::new(),
-            file_browsers: HashMap::new(),
             palette: None,
             find_file: None,
             search_state: SearchState {
@@ -67,7 +64,6 @@ impl Default for RenderState {
             recording_macro: None,
             config_error: None,
             recent_picker: None,
-            terminals: HashMap::new(),
         }
     }
 }
@@ -78,7 +74,7 @@ impl RenderState {
         let buf_id = buf.id;
         self.buffers.push(buf);
         if let Some(pane) = self.pane_layout.pane_by_id_mut(self.pane_layout.active_id) {
-            pane.buffer_id = Some(buf_id);
+            pane.content = PaneContent::Buffer(buf_id);
         }
         self
     }
@@ -143,7 +139,9 @@ impl RenderState {
     }
 
     pub fn with_file_browser(mut self, pane_id: usize, fb: FileBrowser) -> Self {
-        self.file_browsers.insert(pane_id, fb);
+        if let Some(pane) = self.pane_layout.pane_by_id_mut(pane_id) {
+            pane.content = PaneContent::FileBrowser(fb);
+        }
         self
     }
 
@@ -167,9 +165,11 @@ impl RenderState {
         self
     }
 
-    /// Add a terminal session to a pane and set it as active.
+    /// Add a terminal session to a pane.
     pub fn with_terminal(mut self, pane_id: usize, term: TerminalSession) -> Self {
-        self.terminals.insert(pane_id, term);
+        if let Some(pane) = self.pane_layout.pane_by_id_mut(pane_id) {
+            pane.content = PaneContent::Terminal(term);
+        }
         self
     }
 }
@@ -193,8 +193,6 @@ pub fn render_to_string(width: u16, height: u16, state: &RenderState) -> String 
                 &state.pending_keys,
                 &state.pending_hints,
                 &state.highlight_cache,
-                &state.file_browsers,
-                &state.terminals,
                 &state.palette,
                 &state.find_file,
                 &state.search_state,

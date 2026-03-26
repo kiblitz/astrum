@@ -3,10 +3,9 @@ use crate::buffer::{Buffer, Cursor};
 use crate::editor::{FindFileState, PaletteState, RecentPickerState, SearchState};
 use crate::file_browser::{format_size, BrowserInputMode, FileBrowser};
 use crate::input::Mode;
-use crate::pane::{LayoutNode, PaneLayout, SplitDirection};
+use crate::pane::{LayoutNode, PaneContent, PaneLayout, SplitDirection};
 use crate::syntax::HighlightCache;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use std::collections::HashMap;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
@@ -30,8 +29,6 @@ impl Renderer {
         pending_keys: &str,
         pending_hints: &[(String, String)],
         highlight_cache: &HighlightCache,
-        file_browsers: &HashMap<usize, FileBrowser>,
-        terminals: &HashMap<usize, crate::terminal::TerminalSession>,
         palette: &Option<PaletteState>,
         find_file: &Option<FindFileState>,
         search_state: &SearchState,
@@ -49,7 +46,8 @@ impl Renderer {
         // Compute active_buf_idx from pane_layout
         let active_buf_idx = pane_layout
             .active_pane()
-            .buffer_id
+            .content
+            .buffer_id()
             .and_then(|bid| buffers.iter().position(|b| b.id == bid))
             .unwrap_or(0);
 
@@ -79,21 +77,30 @@ impl Renderer {
         }
 
         // Main area: always render panes, overlay file browsers on their panes
-        let active_fb = file_browsers.get(&pane_layout.active_id);
-        let active_term = terminals.get(&pane_layout.active_id);
-        if !buffers.is_empty() || !pane_layout.is_single() || !terminals.is_empty() {
+        let active_content = &pane_layout.active_pane().content;
+        let active_fb = active_content.as_browser();
+        let has_content = !buffers.is_empty() || !pane_layout.is_single()
+            || pane_layout.panes.iter().any(|p| p.content.is_terminal());
+        if has_content {
             let show_cursor = !has_overlay;
-            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, file_browsers, terminals, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
+            self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
             // Status line
-            if let Some(term) = active_term {
-                self.render_terminal_status(frame, chunks[2], term, mode);
-            } else if let Some(fb) = active_fb {
-                self.render_file_browser_status(frame, chunks[2], fb);
-            } else {
-                let active_pane = pane_layout.active_pane();
-                if let Some(buf) = active_pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
-                    self.render_status_line(frame, chunks[2], buf, &active_pane.cursor, mode);
-                } else {
+            match active_content {
+                PaneContent::Terminal(term) => {
+                    self.render_terminal_status(frame, chunks[2], term, mode);
+                }
+                PaneContent::FileBrowser(fb) => {
+                    self.render_file_browser_status(frame, chunks[2], fb);
+                }
+                PaneContent::Buffer(_) => {
+                    let active_pane = pane_layout.active_pane();
+                    if let Some(buf) = active_pane.content.buffer_id().and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
+                        self.render_status_line(frame, chunks[2], buf, &active_pane.cursor, mode);
+                    } else {
+                        self.render_welcome_status(frame, chunks[2]);
+                    }
+                }
+                PaneContent::Welcome => {
                     self.render_welcome_status(frame, chunks[2]);
                 }
             }
@@ -168,8 +175,6 @@ impl Renderer {
         pane_layout: &PaneLayout,
         buffers: &[Buffer],
         highlight_cache: &HighlightCache,
-        file_browsers: &HashMap<usize, FileBrowser>,
-        terminals: &HashMap<usize, crate::terminal::TerminalSession>,
         show_cursor: bool,
         search_state: &SearchState,
         mode: &Mode,
@@ -181,7 +186,6 @@ impl Renderer {
             LayoutNode::Leaf(pane_id) => {
                 if let Some(pane) = pane_layout.pane_by_id(*pane_id) {
                     let is_active = pane.id == pane_layout.active_id;
-                    let pane_fb = file_browsers.get(&pane.id);
                     let has_splits = !pane_layout.is_single();
 
                     // If splits exist, reserve 1 row for a per-pane status indicator
@@ -206,29 +210,42 @@ impl Renderer {
                     // Store the content height for viewport calculations.
                     pane.height.set(content_area.height);
 
-                    // Terminal, file browser, or editor content
-                    let pane_term = terminals.get(&pane.id);
-                    if let Some(term) = pane_term {
-                        self.render_terminal(frame, content_area, term, is_active && show_cursor && *mode == Mode::Insert);
-                    } else if let Some(fb) = pane_fb {
-                        self.render_file_browser(frame, content_area, fb);
-                    } else if let Some(buf) = pane.buffer_id.and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
-                        let pane_visual = if is_active && *mode == Mode::Visual { visual_anchor } else { None };
-                        let pane_sub_hl = if is_active { substitute_highlight } else { None };
-                        self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state), pane_visual, pane_sub_hl);
-                    } else {
-                        self.render_welcome(frame, content_area, config_error);
+                    // Render pane content based on type
+                    match &pane.content {
+                        PaneContent::Terminal(term) => {
+                            self.render_terminal(frame, content_area, term, is_active && show_cursor && *mode == Mode::Insert);
+                        }
+                        PaneContent::FileBrowser(fb) => {
+                            self.render_file_browser(frame, content_area, fb);
+                        }
+                        PaneContent::Buffer(buf_id) => {
+                            if let Some(buf) = buffers.iter().find(|b| b.id == *buf_id) {
+                                let pane_visual = if is_active && *mode == Mode::Visual { visual_anchor } else { None };
+                                let pane_sub_hl = if is_active { substitute_highlight } else { None };
+                                self.render_editor(frame, content_area, buf, &pane.cursor, pane.scroll_offset, is_active, highlight_cache, show_cursor, Some(search_state), pane_visual, pane_sub_hl);
+                            } else {
+                                self.render_welcome(frame, content_area, config_error);
+                            }
+                        }
+                        PaneContent::Welcome => {
+                            self.render_welcome(frame, content_area, config_error);
+                        }
                     }
 
                     // Per-pane indicator when splits exist
                     if let Some(ind_area) = indicator_area {
-                        let buf_name = if let Some(term) = pane_term {
-                            &term.title
-                        } else {
-                            pane.buffer_id
-                                .and_then(|bid| buffers.iter().find(|b| b.id == bid))
-                                .map(|b| b.name.as_str())
-                                .unwrap_or("[No File]")
+                        let buf_name = match &pane.content {
+                            PaneContent::Terminal(term) => term.title.as_str(),
+                            PaneContent::Buffer(buf_id) => {
+                                buffers.iter().find(|b| b.id == *buf_id)
+                                    .map(|b| b.name.as_str())
+                                    .unwrap_or("[No File]")
+                            }
+                            PaneContent::FileBrowser(fb) => {
+                                // Show directory name for browser panes
+                                fb.current_dir.to_str().unwrap_or("[Browser]")
+                            }
+                            PaneContent::Welcome => "[No File]",
                         };
                         let style = if is_active {
                             Style::default().fg(Color::Black).bg(Color::Blue)
@@ -271,7 +288,7 @@ impl Renderer {
                                 width: w,
                                 height: area.height,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, terminals, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
                             x_offset += w;
 
                             // Draw separator after each child except the last
@@ -305,7 +322,7 @@ impl Renderer {
                                 width: area.width,
                                 height: h,
                             };
-                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, file_browsers, terminals, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
+                            self.render_panes(frame, child_area, child, pane_layout, buffers, highlight_cache, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
                             y_offset += h;
 
                             if i + 1 < children.len() {

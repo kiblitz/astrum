@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use astrum::input::Mode;
-use astrum::pane::SplitDirection;
+use astrum::pane::{PaneContent, SplitDirection};
 use expect_test::expect;
 
 #[test]
@@ -183,15 +183,13 @@ fn terminal_left_buffer_right_split() {
     let mut state = RenderState::default();
     let p1 = state.pane_layout.active_id;
     let term = make_terminal(20, 40, &["$ ls", "file.rs", "$ "], "bash");
-    state.terminals.insert(p1, term);
-    // Clear buffer on terminal pane.
-    state.pane_layout.pane_by_id_mut(p1).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(p1).unwrap().content = PaneContent::Terminal(term);
 
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     let buf = make_buffer("fn main() {}\n", "main.rs");
     let buf_id = buf.id;
     state.buffers.push(buf);
-    state.pane_layout.pane_by_id_mut(p2).unwrap().buffer_id = Some(buf_id);
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Buffer(buf_id);
 
     // Focus on terminal pane.
     state.pane_layout.active_id = p1;
@@ -229,14 +227,13 @@ fn terminal_top_buffer_bottom_split() {
     let mut state = RenderState::default();
     let p1 = state.pane_layout.active_id;
     let term = make_terminal(10, 80, &["$ cargo build", "Compiling...", "$ "], "powershell");
-    state.terminals.insert(p1, term);
-    state.pane_layout.pane_by_id_mut(p1).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(p1).unwrap().content = PaneContent::Terminal(term);
 
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     let buf = make_buffer("hello world\n", "test.txt");
     let buf_id = buf.id;
     state.buffers.push(buf);
-    state.pane_layout.pane_by_id_mut(p2).unwrap().buffer_id = Some(buf_id);
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Buffer(buf_id);
 
     state.pane_layout.active_id = p1;
     let state = state.with_mode(Mode::Normal);
@@ -273,8 +270,7 @@ fn terminal_with_find_file_overlay() {
     let mut state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["$ ", ""], "bash");
-    state.terminals.insert(pane_id, term);
-    state.pane_layout.pane_by_id_mut(pane_id).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(pane_id).unwrap().content = PaneContent::Terminal(term);
 
     let ff = make_find_file("/home/user/project", vec![
         ("src", true, 0),
@@ -315,8 +311,7 @@ fn terminal_with_command_mode() {
     let mut state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["$ whoami", "user", "$ "], "bash");
-    state.terminals.insert(pane_id, term);
-    state.pane_layout.pane_by_id_mut(pane_id).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(pane_id).unwrap().content = PaneContent::Terminal(term);
 
     let state = state.with_command("w");
     let actual = render_to_string(80, 24, &state);
@@ -352,8 +347,7 @@ fn terminal_with_status_message() {
     let mut state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["$ "], "bash");
-    state.terminals.insert(pane_id, term);
-    state.pane_layout.pane_by_id_mut(pane_id).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(pane_id).unwrap().content = PaneContent::Terminal(term);
 
     let state = state.with_status("Terminal opened").with_mode(Mode::Insert);
     let actual = render_to_string(80, 24, &state);
@@ -389,13 +383,11 @@ fn two_terminal_panes_split() {
     let mut state = RenderState::default();
     let p1 = state.pane_layout.active_id;
     let term1 = make_terminal(20, 40, &["$ echo left", "left"], "bash");
-    state.terminals.insert(p1, term1);
-    state.pane_layout.pane_by_id_mut(p1).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(p1).unwrap().content = PaneContent::Terminal(term1);
 
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     let term2 = make_terminal(20, 40, &["$ echo right", "right"], "zsh");
-    state.terminals.insert(p2, term2);
-    state.pane_layout.pane_by_id_mut(p2).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Terminal(term2);
 
     state.pane_layout.active_id = p1;
     let state = state.with_mode(Mode::Insert);
@@ -473,8 +465,7 @@ fn terminal_recording_macro_indicator() {
     let mut state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["$ "], "bash");
-    state.terminals.insert(pane_id, term);
-    state.pane_layout.pane_by_id_mut(pane_id).unwrap().buffer_id = None;
+    state.pane_layout.pane_by_id_mut(pane_id).unwrap().content = PaneContent::Terminal(term);
 
     let state = state.with_recording_macro('a').with_mode(Mode::Normal);
     let actual = render_to_string(80, 24, &state);

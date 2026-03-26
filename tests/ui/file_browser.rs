@@ -363,7 +363,7 @@ fn browser_with_buffer_in_split() {
           ~                                     │
           ~                                     │
           ~                                     │
-         main.rs                                │ main.rs
+         main.rs                                │ /test/dir
          NORMAL  main.rs                                                            1:1
         SPC for leader | : for commands | SPC q q to quit"#]]);
 }

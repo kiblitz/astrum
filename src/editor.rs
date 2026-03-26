@@ -3,7 +3,7 @@ use crate::buffer::Buffer;
 use crate::config::Config;
 use crate::file_browser::{scan_directory, FileBrowser, FileBrowserResult};
 use crate::input::{InputHandler, Mode};
-use crate::pane::{FocusDirection, PaneLayout, SplitDirection};
+use crate::pane::{FocusDirection, PaneContent, PaneLayout, SplitDirection};
 use crate::renderer::Renderer;
 use crate::swap::SwapManager;
 use crate::syntax::{EditInfo, HighlightCache, HighlightEngine};
@@ -300,8 +300,6 @@ pub struct Editor {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     highlight_engine: HighlightEngine,
     highlight_cache: HighlightCache,
-    /// Per-pane file browsers. Key is the pane id.
-    file_browsers: HashMap<usize, FileBrowser>,
     status_message: String,
     should_quit: bool,
     clipboard: Option<arboard::Clipboard>,
@@ -336,8 +334,6 @@ pub struct Editor {
     recent_panes: Vec<RecentPane>,
     /// Recent files picker overlay.
     recent_picker: Option<RecentPickerState>,
-    /// Per-pane terminal sessions. Key is the pane id.
-    pub terminals: HashMap<usize, crate::terminal::TerminalSession>,
     /// Detached terminal sessions (not assigned to any pane). Key is terminal session id.
     detached_terminals: HashMap<usize, crate::terminal::TerminalSession>,
     /// Channel for receiving terminal output from background reader threads.
@@ -549,7 +545,6 @@ impl Editor {
             terminal,
             highlight_engine,
             highlight_cache: HighlightCache::new(),
-            file_browsers: HashMap::new(),
             status_message: String::new(),
             should_quit: false,
             clipboard: arboard::Clipboard::new().ok(),
@@ -570,7 +565,6 @@ impl Editor {
             config_error: None,
             recent_panes: Vec::new(),
             recent_picker: None,
-            terminals: HashMap::new(),
             detached_terminals: HashMap::new(),
             terminal_rx: rx,
             terminal_tx: tx,
@@ -619,7 +613,9 @@ impl Editor {
                 }
                 RecentPane::Terminal { term_id, title: saved_title } => {
                     // Look up the live title from the actual terminal session.
-                    let live_term = self.terminals.values().find(|t| t.id == *term_id)
+                    let live_term = self.pane_layout.panes.iter()
+                        .filter_map(|p| p.content.as_terminal())
+                        .find(|t| t.id == *term_id)
                         .or_else(|| self.detached_terminals.get(term_id));
                     let (title, exited) = match live_term {
                         Some(t) => {
@@ -641,7 +637,7 @@ impl Editor {
     // -- Helper methods --
 
     fn active_buffer(&self) -> Option<&Buffer> {
-        let bid = self.pane_layout.active_pane().buffer_id?;
+        let bid = self.pane_layout.active_pane().content.buffer_id()?;
         self.buffers.iter().find(|b| b.id == bid)
     }
 
@@ -655,7 +651,7 @@ impl Editor {
     }
 
     fn active_buffer_idx(&self) -> Option<usize> {
-        let bid = self.pane_layout.active_pane().buffer_id?;
+        let bid = self.pane_layout.active_pane().content.buffer_id()?;
         self.buffers.iter().position(|b| b.id == bid)
     }
 
@@ -717,9 +713,8 @@ impl Editor {
 
     /// Open a terminal in the active pane.
     fn open_terminal(&mut self, shell: Option<&str>) -> Result<()> {
-        let pane_id = self.pane_layout.active_id;
         // Close any existing terminal on this pane.
-        if let Some(mut old) = self.terminals.remove(&pane_id) {
+        if let Some(mut old) = self.pane_layout.active_pane_mut().content.take_terminal() {
             old.kill();
         }
         // Use a default size; resize will correct it on the next render frame.
@@ -747,13 +742,9 @@ impl Editor {
                         }
                     });
                 }
-                // Clear buffer assignment — terminal replaces the buffer view.
-                self.pane_layout.active_pane_mut().buffer_id = None;
-                // Remove any file browser on this pane.
-                self.file_browsers.remove(&pane_id);
                 let tid = session.id;
                 let title = session.title.clone();
-                self.terminals.insert(pane_id, session);
+                self.pane_layout.active_pane_mut().content = PaneContent::Terminal(session);
                 self.push_recent_terminal(tid, title);
                 self.input.mode = Mode::Insert;
                 self.status_message = "Terminal opened".into();
@@ -785,17 +776,16 @@ impl Editor {
             tokio::task::spawn_blocking(move || scan_directory(&dir)).await?;
         fb.set_entries(entries);
 
-        self.file_browsers.insert(pane_id, fb);
+        self.pane_layout.pane_by_id_mut(pane_id).unwrap().content = PaneContent::FileBrowser(fb);
         Ok(())
     }
 
     async fn scan_current_browser_dir(&mut self) -> Result<()> {
-        let pane_id = self.pane_layout.active_id;
-        if let Some(ref fb) = self.file_browsers.get(&pane_id) {
+        if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
             let dir = fb.current_dir.clone();
             let entries =
                 tokio::task::spawn_blocking(move || scan_directory(&dir)).await?;
-            if let Some(ref mut fb) = self.file_browsers.get_mut(&pane_id) {
+            if let Some(fb) = self.pane_layout.active_pane_mut().content.as_browser_mut() {
                 fb.set_entries(entries);
             }
         }
@@ -841,9 +831,6 @@ impl Editor {
                 let pending = &self.input.pending_display;
                 let pending_hints = self.input.pending_hints();
                 let hl_cache = &self.highlight_cache;
-                let file_browsers = &self.file_browsers;
-                let terminals = &self.terminals;
-
                 let palette = &self.palette;
                 let find_file = &self.find_file;
                 let search_state = &self.search;
@@ -860,7 +847,7 @@ impl Editor {
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
-                        &pending_hints, hl_cache, file_browsers, terminals, palette,
+                        &pending_hints, hl_cache, palette,
                         find_file, search_state, search_buf, search_dir, visual_anchor,
                         sub_hl, rec_macro, config_err, recent_picker,
                     );
@@ -868,7 +855,7 @@ impl Editor {
             }
 
             // Cursor style per mode.
-            if self.file_browsers.contains_key(&self.pane_layout.active_id) {
+            if self.pane_layout.active_pane().content.is_browser() {
                 execute!(io::stdout(), cursor::SetCursorStyle::SteadyBlock)?;
             } else {
                 match self.input.mode {
@@ -907,14 +894,14 @@ impl Editor {
                                     continue;
                                 }
 
-                                let active_id = self.pane_layout.active_id;
-                                let on_terminal_pane = self.terminals.contains_key(&active_id);
-                                let on_browser_pane = self.file_browsers.contains_key(&active_id);
+                                let active_content = &self.pane_layout.active_pane().content;
+                                let on_terminal_pane = active_content.is_terminal();
+                                let on_browser_pane = active_content.is_browser();
                                 let in_command_mode = self.input.mode == Mode::Command;
                                 let in_search_mode = self.input.mode == Mode::Search;
                                 let browser_navigate = on_browser_pane
                                     && !in_command_mode
-                                    && self.file_browsers.get(&active_id)
+                                    && active_content.as_browser()
                                         .map_or(false, |fb| fb.input_mode == crate::file_browser::BrowserInputMode::Navigate);
 
                                 if on_terminal_pane && self.input.mode == Mode::Insert
@@ -925,7 +912,7 @@ impl Editor {
                                     if key.code == crossterm::event::KeyCode::Esc {
                                         self.input.mode = Mode::Normal;
                                     } else if let Some(bytes) = crate::terminal::key_to_bytes(&key) {
-                                        if let Some(term) = self.terminals.get_mut(&active_id) {
+                                        if let Some(term) = self.pane_layout.active_pane_mut().content.as_terminal_mut() {
                                             let _ = term.write_bytes(&bytes);
                                         }
                                     }
@@ -966,8 +953,10 @@ impl Editor {
                                 // Resize all terminal sessions to match their pane area.
                                 // Approximate: subtract status bar and tab bar rows.
                                 let term_rows = h.saturating_sub(3).max(1);
-                                for (_, term) in &mut self.terminals {
-                                    term.resize(term_rows, w);
+                                for pane in &mut self.pane_layout.panes {
+                                    if let Some(term) = pane.content.as_terminal_mut() {
+                                        term.resize(term_rows, w);
+                                    }
                                 }
                                 for (_, term) in &mut self.detached_terminals {
                                     term.resize(term_rows, w);
@@ -980,12 +969,14 @@ impl Editor {
                 // Terminal output from background reader threads.
                 Some((term_id, data)) = self.terminal_rx.recv() => {
                     let mut found = false;
-                    for (_, term) in &mut self.terminals {
-                        if term.id == term_id {
-                            term.process_output(&data);
-                            term.check_exit();
-                            found = true;
-                            break;
+                    for pane in &mut self.pane_layout.panes {
+                        if let Some(term) = pane.content.as_terminal_mut() {
+                            if term.id == term_id {
+                                term.process_output(&data);
+                                term.check_exit();
+                                found = true;
+                                break;
+                            }
                         }
                     }
                     if !found {
@@ -1026,10 +1017,10 @@ impl Editor {
         let pane_id = self.pane_layout.active_id;
         let count = self.input.count_prefix.take().unwrap_or(1);
 
-        let old_state = self.file_browsers.get(&pane_id)
+        let old_state = self.pane_layout.active_pane().content.as_browser()
             .map(|fb| (fb.current_dir.clone(), fb.selected, fb.scroll_offset));
 
-        let result = if let Some(ref mut fb) = self.file_browsers.get_mut(&pane_id) {
+        let result = if let Some(fb) = self.pane_layout.active_pane_mut().content.as_browser_mut() {
             let r = fb.handle_action(&action, count);
             fb.ensure_visible(viewport_height);
             r
@@ -1048,10 +1039,10 @@ impl Editor {
         let viewport_height = self.active_viewport_height().saturating_sub(2);
         let pane_id = self.pane_layout.active_id;
 
-        let old_state = self.file_browsers.get(&pane_id)
+        let old_state = self.pane_layout.active_pane().content.as_browser()
             .map(|fb| (fb.current_dir.clone(), fb.selected, fb.scroll_offset));
 
-        let result = if let Some(ref mut fb) = self.file_browsers.get_mut(&pane_id) {
+        let result = if let Some(fb) = self.pane_layout.active_pane_mut().content.as_browser_mut() {
             let r = fb.handle_key(key);
             fb.ensure_visible(viewport_height);
             r
@@ -1081,7 +1072,7 @@ impl Editor {
                 if let Some((dir, sel, scroll)) = old_state {
                     self.push_browser_jump(dir, sel, scroll);
                 }
-                self.file_browsers.remove(&pane_id);
+                // open_file will set new content, replacing the browser
                 let path_str = path.to_string_lossy().to_string();
                 self.open_file(&path_str).await?;
             }
@@ -1089,7 +1080,6 @@ impl Editor {
                 if let Some((dir, sel, scroll)) = old_state {
                     self.push_browser_jump(dir, sel, scroll);
                 }
-                self.file_browsers.remove(&pane_id);
                 let path_str = path.to_string_lossy().to_string();
                 self.open_file(&path_str).await?;
                 self.input.mode = Mode::Insert;
@@ -1097,12 +1087,11 @@ impl Editor {
             FileBrowserResult::Close => {
                 if !self.pane_layout.is_single() {
                     self.pane_layout.close_active();
-                    self.file_browsers.remove(&pane_id);
                     self.jump_history.remove(&pane_id);
                 } else {
-                    let pane_has_buffer = self.pane_layout.active_pane().buffer_id.is_some();
+                    let pane_has_buffer = self.pane_layout.active_pane().content.buffer_id().is_some();
                     if pane_has_buffer || !self.buffers.is_empty() {
-                        self.file_browsers.remove(&pane_id);
+                        self.pane_layout.active_pane_mut().content = PaneContent::Welcome;
                     }
                 }
             }
@@ -1111,7 +1100,7 @@ impl Editor {
                     self.push_browser_jump(dir, sel, scroll);
                 }
                 // Track directory navigation in recent paths.
-                if let Some(fb) = self.file_browsers.get(&pane_id) {
+                if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
                     self.push_recent(fb.current_dir.clone());
                 }
                 self.scan_current_browser_dir().await?;
@@ -1428,43 +1417,60 @@ impl Editor {
             Action::CloseBuffer => {
                 let pane_id = self.pane_layout.active_id;
                 let mut blocked = false;
-                // Delete the content (buffer or terminal) and remove from recents.
-                if let Some(mut term) = self.terminals.remove(&pane_id) {
-                    let term_id = term.id;
-                    term.kill();
-                    self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
-                } else if let Some(buf_id) = self.pane_layout.active_pane().buffer_id {
-                    if let Some(buf_idx) = self.buffers.iter().position(|b| b.id == buf_id) {
-                        if self.buffers[buf_idx].modified {
-                            self.status_message = "Buffer has unsaved changes. Use :bd! to force close".into();
-                            blocked = true;
-                        } else {
-                            if let Some(ref path) = self.buffers[buf_idx].path.clone() {
-                                let clean = strip_unc_prefix(
-                                    &std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
-                                );
-                                self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
-                            }
-                            let removed = self.buffers.remove(buf_idx);
-                            let removed_id = removed.id;
-                            self.highlight_cache.invalidate(removed_id);
-                            self.highlight_engine.remove_buffer(removed_id);
-                            self.swap_manager.unregister(removed_id);
-                            // Clear this buffer from any other panes still showing it.
-                            for pid in self.pane_layout.root.pane_ids() {
-                                if let Some(pane) = self.pane_layout.pane_by_id_mut(pid) {
-                                    if pane.buffer_id == Some(removed_id) {
-                                        pane.buffer_id = None;
+                let content = &self.pane_layout.active_pane().content;
+
+                // Check if another pane has the same content
+                let other_has_same = self.pane_layout.panes.iter()
+                    .any(|p| p.id != pane_id && p.content.same_identity(content));
+
+                match content {
+                    PaneContent::Terminal(_) if !other_has_same => {
+                        let mut term = self.pane_layout.active_pane_mut().content.take_terminal().unwrap();
+                        let term_id = term.id;
+                        term.kill();
+                        self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
+                    }
+                    PaneContent::FileBrowser(_) if !other_has_same => {
+                        if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
+                            let dir = fb.current_dir.clone();
+                            let clean = strip_unc_prefix(
+                                &std::fs::canonicalize(&dir).unwrap_or_else(|_| dir),
+                            );
+                            self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+                        }
+                    }
+                    PaneContent::Buffer(buf_id) => {
+                        let buf_id = *buf_id;
+                        if let Some(buf_idx) = self.buffers.iter().position(|b| b.id == buf_id) {
+                            if self.buffers[buf_idx].modified {
+                                self.status_message = "Buffer has unsaved changes. Use :bd! to force close".into();
+                                blocked = true;
+                            } else if !other_has_same {
+                                if let Some(ref path) = self.buffers[buf_idx].path.clone() {
+                                    let clean = strip_unc_prefix(
+                                        &std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+                                    );
+                                    self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+                                }
+                                let removed = self.buffers.remove(buf_idx);
+                                let removed_id = removed.id;
+                                self.highlight_cache.invalidate(removed_id);
+                                self.highlight_engine.remove_buffer(removed_id);
+                                self.swap_manager.unregister(removed_id);
+                                for pane in &mut self.pane_layout.panes {
+                                    if let PaneContent::Buffer(bid) = pane.content {
+                                        if bid == removed_id {
+                                            pane.content = PaneContent::Welcome;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    _ => {}
                 }
                 if !blocked {
-                    // Close the pane (same as SPC w d).
                     self.pane_layout.close_active();
-                    self.file_browsers.remove(&pane_id);
                     self.jump_history.remove(&pane_id);
                 }
             }
@@ -1478,9 +1484,6 @@ impl Editor {
                 };
                 let old_id = self.pane_layout.active_id;
                 let new_id = self.pane_layout.split(dir);
-                if let Some(fb) = self.file_browsers.get(&old_id).cloned() {
-                    self.file_browsers.insert(new_id, fb);
-                }
                 if let Some(history) = self.jump_history.get(&old_id).cloned() {
                     self.jump_history.insert(new_id, history);
                 }
@@ -1518,15 +1521,13 @@ impl Editor {
             Action::ClosePane => {
                 let old_id = self.pane_layout.active_id;
                 self.pane_layout.close_active();
-                self.file_browsers.remove(&old_id);
                 self.jump_history.remove(&old_id);
             }
 
             // File browser
             Action::OpenFileBrowser => {
                 if self.find_file.is_none() {
-                    let pane_id = self.pane_layout.active_id;
-                    let dir = if let Some(fb) = self.file_browsers.get(&pane_id) {
+                    let dir = if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
                         // Start at the file browser's current directory.
                         fb.current_dir.clone()
                     } else if let Some(buf) = self.active_buffer() {
@@ -1925,12 +1926,12 @@ impl Editor {
     fn quit_current(&mut self, force: bool) {
         if !self.pane_layout.is_single() {
             let pane_id = self.pane_layout.active_id;
-            self.pane_layout.close_active();
-            self.file_browsers.remove(&pane_id);
-            self.jump_history.remove(&pane_id);
-            if let Some(mut term) = self.terminals.remove(&pane_id) {
+            // Kill terminal if this pane has one (closing pane destroys it).
+            if let Some(mut term) = self.pane_layout.active_pane_mut().content.take_terminal() {
                 term.kill();
             }
+            self.pane_layout.close_active();
+            self.jump_history.remove(&pane_id);
         } else if force || self.confirm_double_quit() {
             self.should_quit = true;
         }
@@ -1973,7 +1974,7 @@ impl Editor {
         let active_id = self.pane_layout.active_id;
 
         // For the active pane, try to restore from jump history
-        if self.pane_layout.active_pane().buffer_id == Some(removed_id) {
+        if self.pane_layout.active_pane().content.buffer_id() == Some(removed_id) {
             let mut restored = false;
             // Search jump_back for a valid destination (skip stale entries)
             let pane_id = self.pane_layout.active_id;
@@ -2014,13 +2015,13 @@ impl Editor {
 
         // Update other panes that referenced this buffer
         for pane in &mut self.pane_layout.panes {
-            if pane.id != active_id && pane.buffer_id == Some(removed_id) {
+            if pane.id != active_id && pane.content.buffer_id() == Some(removed_id) {
                 if !self.buffers.is_empty() {
                     let new_buf_id =
                         self.buffers[self.buffers.len().saturating_sub(1)].id;
                     pane.switch_buffer(new_buf_id);
                 } else {
-                    pane.buffer_id = None;
+                    pane.content = PaneContent::Welcome;
                     pane.cursor = crate::buffer::Cursor::default();
                     pane.scroll_offset = 0;
                 }
@@ -2130,8 +2131,6 @@ impl Editor {
                 execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
 
                 if let Some(kind) = selected {
-                    let pane_id = self.pane_layout.active_id;
-                    self.file_browsers.remove(&pane_id);
                     self.push_jump();
                     match kind {
                         RecentItemKind::Directory(path) => {
@@ -2148,11 +2147,9 @@ impl Editor {
                             // screen. This requires jumping back until we find a view that
                             // doesn't itself steal from another pane (to avoid cascading).
                             self.detach_terminal_from_active_pane();
-                            // Try detached first, then steal from another pane.
                             let term = self.take_terminal_by_id(term_id);
                             if let Some(term) = term {
-                                self.pane_layout.active_pane_mut().buffer_id = None;
-                                self.terminals.insert(pane_id, term);
+                                self.pane_layout.active_pane_mut().content = PaneContent::Terminal(term);
                                 self.input.mode = Mode::Insert;
                             } else {
                                 let _ = self.open_terminal(None);
@@ -2211,10 +2208,8 @@ impl Editor {
                             self.status_message = format!("\"{}\" already exists", ff.input);
                             self.find_file = Some(ff);
                         } else {
-                            // Record jump BEFORE removing browser so history captures browser state.
+                            // Record jump BEFORE opening file so history captures browser state.
                             self.push_jump();
-                            let pane_id = self.pane_layout.active_id;
-                            self.file_browsers.remove(&pane_id);
                             let path_str = new_path.to_string_lossy().to_string();
                             self.open_file(&path_str).await?;
                             self.input.mode = Mode::Insert;
@@ -2229,10 +2224,8 @@ impl Editor {
                             ff.enter_dir(&entry.path);
                             self.find_file = Some(ff);
                         } else {
-                            // Record jump BEFORE removing browser so history captures browser state.
+                            // Record jump BEFORE opening file so history captures browser state.
                             self.push_jump();
-                            let pane_id = self.pane_layout.active_id;
-                            self.file_browsers.remove(&pane_id);
                             let path_str = entry.path.to_string_lossy().to_string();
                             self.open_file(&path_str).await?;
                         }
@@ -2369,8 +2362,6 @@ impl Editor {
                             self.find_file = Some(ff);
                         } else {
                             self.push_jump();
-                            let pane_id = self.pane_layout.active_id;
-                            self.file_browsers.remove(&pane_id);
                             let path_str = entry.path.to_string_lossy().to_string();
                             self.open_file(&path_str).await?;
                         }
@@ -2392,7 +2383,7 @@ impl Editor {
     {
         let Self { buffers, pane_layout, .. } = self;
         let pane = pane_layout.active_pane_mut();
-        let buf_id = pane.buffer_id?;
+        let buf_id = pane.content.buffer_id()?;
         let buf = buffers.iter_mut().find(|b| b.id == buf_id)?;
         buf.cursor = pane.cursor;
         buf.scroll_offset = pane.scroll_offset;
@@ -2441,7 +2432,7 @@ impl Editor {
     {
         let Self { buffers, pane_layout, highlight_engine, highlight_cache, .. } = self;
         let pane = pane_layout.active_pane_mut();
-        let buf_id = match pane.buffer_id {
+        let buf_id = match pane.content.buffer_id() {
             Some(id) => id,
             None => return,
         };
@@ -2555,11 +2546,12 @@ impl Editor {
     /// Find and remove a terminal by its session ID from detached storage or any pane.
     fn take_terminal_by_id(&mut self, term_id: usize) -> Option<crate::terminal::TerminalSession> {
         self.detached_terminals.remove(&term_id).or_else(|| {
-            let other_pane = self.terminals.iter()
-                .find(|(_, t)| t.id == term_id)
-                .map(|(&pid, _)| pid);
+            let other_pane = self.pane_layout.panes.iter()
+                .find(|p| p.content.as_terminal().map_or(false, |t| t.id == term_id))
+                .map(|p| p.id);
             if let Some(pid) = other_pane {
-                self.terminals.remove(&pid)
+                self.pane_layout.pane_by_id_mut(pid)
+                    .and_then(|p| p.content.take_terminal())
             } else {
                 None
             }
@@ -2568,29 +2560,26 @@ impl Editor {
 
     /// Detach the terminal from the active pane, moving it to detached storage.
     fn detach_terminal_from_active_pane(&mut self) {
-        let pane_id = self.pane_layout.active_id;
-        if let Some(term) = self.terminals.remove(&pane_id) {
+        if let Some(term) = self.pane_layout.active_pane_mut().content.take_terminal() {
             self.detached_terminals.insert(term.id, term);
         }
     }
 
     fn current_jump_position(&self) -> Option<JumpPosition> {
-        let pane_id = self.pane_layout.active_id;
-        if let Some(term) = self.terminals.get(&pane_id) {
-            Some(JumpPosition::Terminal { term_id: term.id })
-        } else if let Some(fb) = self.file_browsers.get(&pane_id) {
-            Some(JumpPosition::Browser {
+        let pane = self.pane_layout.active_pane();
+        match &pane.content {
+            PaneContent::Terminal(term) => Some(JumpPosition::Terminal { term_id: term.id }),
+            PaneContent::FileBrowser(fb) => Some(JumpPosition::Browser {
                 dir: fb.current_dir.clone(),
                 selected: fb.selected,
                 scroll_offset: fb.scroll_offset,
-            })
-        } else {
-            let pane = self.pane_layout.active_pane();
-            pane.buffer_id.map(|buf_id| JumpPosition::Buffer {
-                buffer_id: buf_id,
+            }),
+            PaneContent::Buffer(buf_id) => Some(JumpPosition::Buffer {
+                buffer_id: *buf_id,
                 line: pane.cursor.line,
                 col: pane.cursor.col,
-            })
+            }),
+            PaneContent::Welcome => None,
         }
     }
 
@@ -2649,11 +2638,8 @@ impl Editor {
     }
 
     fn restore_jump(&mut self, pos: JumpPosition) {
-        let pane_id = self.pane_layout.active_id;
         match pos {
             JumpPosition::Buffer { buffer_id, line, col } => {
-                // Close any file browser on this pane
-                self.file_browsers.remove(&pane_id);
                 if self.buffers.iter().any(|b| b.id == buffer_id) {
                     let pane = self.pane_layout.active_pane_mut();
                     pane.switch_buffer(buffer_id);
@@ -2661,6 +2647,7 @@ impl Editor {
                     pane.cursor.col = col;
                     if let Some(buf) = self.buffers.iter().find(|b| b.id == buffer_id) {
                         let line_count = buf.line_count();
+                        let pane = self.pane_layout.active_pane_mut();
                         if pane.cursor.line >= line_count {
                             pane.cursor.line = line_count.saturating_sub(1);
                         }
@@ -2670,25 +2657,20 @@ impl Editor {
                 }
             }
             JumpPosition::Browser { dir, selected, scroll_offset } => {
-                // Open file browser at the saved directory with restored cursor
                 let mut fb = crate::file_browser::FileBrowser::new(dir.clone());
                 let entries = crate::file_browser::scan_directory(&dir);
                 fb.set_entries(entries);
-                // Restore cursor position, clamped to entry count.
                 let count = fb.visible_count();
                 fb.selected = if selected < count { selected } else { count.saturating_sub(1) };
                 fb.scroll_offset = scroll_offset;
-                self.file_browsers.insert(pane_id, fb);
+                self.pane_layout.active_pane_mut().content = PaneContent::FileBrowser(fb);
             }
             JumpPosition::Terminal { term_id } => {
                 let term = self.take_terminal_by_id(term_id);
                 if let Some(term) = term {
-                    self.file_browsers.remove(&pane_id);
-                    self.pane_layout.active_pane_mut().buffer_id = None;
-                    self.terminals.insert(pane_id, term);
+                    self.pane_layout.active_pane_mut().content = PaneContent::Terminal(term);
                     self.input.mode = Mode::Insert;
                 } else {
-                    // Terminal was killed — open a fresh one.
                     let _ = self.open_terminal(None);
                 }
             }
@@ -3259,7 +3241,7 @@ impl Editor {
         let pane = self.pane_layout.active_pane();
         let cur_line = pane.cursor.line;
         let cur_col = pane.cursor.col;
-        let buf_id = match pane.buffer_id {
+        let buf_id = match pane.content.buffer_id() {
             Some(id) => id,
             None => return,
         };
@@ -3312,8 +3294,10 @@ impl Editor {
     }
 
     fn cleanup(&mut self) {
-        for (_, mut term) in self.terminals.drain() {
-            term.kill();
+        for pane in &mut self.pane_layout.panes {
+            if let Some(mut term) = pane.content.take_terminal() {
+                term.kill();
+            }
         }
         for (_, mut term) in self.detached_terminals.drain() {
             term.kill();

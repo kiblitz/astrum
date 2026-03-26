@@ -40,7 +40,7 @@ When adding or modifying any UI feature (overlays, status line, pane layout, tab
 - **editor.rs** — Main event loop, action dispatch, orchestration
 - **renderer.rs** — Ratatui TUI rendering (panes, overlays, status bar)
 - **buffer.rs** — Text buffer with cursor, undo/redo, editing operations
-- **pane.rs** — Split pane layout (tree of panes, each shows a buffer or welcome screen)
+- **pane.rs** — Split pane layout with `PaneContent` enum (each pane owns its content: buffer, file browser, terminal, or welcome)
 - **input.rs** — Modal input handler (Normal, Insert, Visual, Command modes)
 - **keymap.rs** — Trie-based keymap with multi-key sequences
 - **config.rs** — KDL config loading with default keybindings
@@ -60,6 +60,29 @@ Buffer closing (`:bd`, `CloseBuffer` action) is a separate operation from quitti
 
 ### Double-quit gate
 `quit_pending` is set on the first `:q` and cleared by any key press that isn't part of the `:q` command flow (`:`, command buffer typing, Enter to execute). This lets `:q :q` work while any other key cancels.
+
+### PaneContent — unified pane content model
+Each pane owns its content via the `PaneContent` enum in `pane.rs`:
+```rust
+pub enum PaneContent {
+    Welcome,
+    Buffer(usize),              // buffer_id (actual Buffer stored centrally)
+    FileBrowser(FileBrowser),   // owned by pane
+    Terminal(TerminalSession),  // owned by pane
+}
+```
+A pane shows exactly **one thing at a time**. This replaces the old product-of-optionals design (`buffer_id: Option<usize>` + `file_browsers: HashMap<usize, FileBrowser>` + `terminals: HashMap<usize, TerminalSession>`) which caused scattered if/else chains and made it easy to forget a content type.
+
+**Key methods on PaneContent:** `buffer_id()`, `is_browser()`, `is_terminal()`, `as_browser()`, `as_terminal()`, `take_terminal()`, `take_browser()`, `same_identity(other)`.
+
+**When adding a new pane content type**, add a variant to `PaneContent`. The compiler will flag every `match` that needs updating. No more forgetting a branch.
+
+**Splitting panes:** `Buffer` copies the buffer_id, `FileBrowser` clones, `Terminal` can't be cloned (new pane gets Welcome), `Welcome` stays Welcome.
+
+**Detached terminals:** `Editor.detached_terminals: HashMap<usize, TerminalSession>` still exists for terminals not on any pane (alive but navigated away from). This is separate from `PaneContent` because detached terminals have no pane.
+
+### SPC b d (CloseBuffer) semantics
+`SPC b d` closes the pane AND deletes the content (buffer/terminal/browser) from the system, removing it from recents. Key rule: if another pane shows the **same content** (checked via `PaneContent::same_identity()`), the pane is closed but the content/recents are left alone. This prevents duplicated buffers from being deleted when only one view is closed.
 
 ### Overlays vs pane content
 Find-file and command palette are **overlays** — they float above pane content and intercept all input. File browsers are **pane content** — they replace the buffer view on a specific pane. Overlays suppress cursor positioning (the `show_cursor` / `has_overlay` pattern in the renderer).
@@ -83,7 +106,7 @@ The find-file overlay uses a **selectable path line** for file creation. `FindFi
 - This design allows creating a file with the same name as an existing folder (select path line instead of folder entry)
 
 ### Jump history and find-file
-When find-file opens a file or creates one, `push_jump()` must be called **before** `file_browsers.remove()` so the jump history captures the browser state (if any). Getting this order wrong causes jump-back to go to the wrong location.
+When find-file opens a file or creates one, `push_jump()` must be called **before** opening the new file so the jump history captures the browser state (if any). Getting this order wrong causes jump-back to go to the wrong location.
 
 ### Cursor management
 Ratatui manages cursor visibility. Calling `set_cursor_position` shows the cursor; not calling it hides it. Never use manual `cursor::Show`/`cursor::Hide` after `terminal.draw()` — it fights with ratatui.
@@ -216,7 +239,7 @@ Comment toggling for any file type.
 Embedded terminal emulator using PTY + VTE parsing.
 
 - **Architecture**: `TerminalSession` in `terminal.rs` owns a PTY child process, a character grid (`Vec<Vec<Cell>>`), and a VTE parser. Background reader thread sends PTY output via `tokio::sync::mpsc` channel to the editor event loop.
-- **Rendering**: Terminal is **pane content** (like file browsers). `terminals: HashMap<usize, TerminalSession>` keyed by pane ID. Renderer priority: terminal > file browser > buffer > welcome.
+- **Rendering**: Terminal is **pane content** via `PaneContent::Terminal(TerminalSession)` — owned directly by the pane, not a separate HashMap. Renderer matches on `PaneContent` to decide what to draw.
 - **Vim-style modes**: Reuses existing Normal/Insert modes (no separate `Mode::Terminal`). In **Insert mode**, all keys are sent directly to the PTY (Esc returns to Normal). In **Normal mode**, all normal editor commands work (SPC leader, `:` commands, motions).
 - **Keybinding**: `SPC !` opens a terminal. `:term` is not supported — use the keybinding.
 - **Default shell**: PowerShell on Windows, `$SHELL` on Unix, fallback to system default.

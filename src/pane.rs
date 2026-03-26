@@ -1,4 +1,6 @@
 use crate::buffer::Cursor;
+use crate::file_browser::FileBrowser;
+use crate::terminal::TerminalSession;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,10 +13,107 @@ pub enum SplitDirection {
     Horizontal, // stacked ─
 }
 
+/// What a pane is currently displaying. A pane shows exactly one thing at a time.
+pub enum PaneContent {
+    Welcome,
+    Buffer(usize),              // buffer_id (actual Buffer stored centrally)
+    FileBrowser(FileBrowser),   // owned by pane
+    Terminal(TerminalSession),  // owned by pane
+}
+
+impl std::fmt::Debug for PaneContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PaneContent::Welcome => write!(f, "Welcome"),
+            PaneContent::Buffer(id) => write!(f, "Buffer({id})"),
+            PaneContent::FileBrowser(_) => write!(f, "FileBrowser(..)"),
+            PaneContent::Terminal(_) => write!(f, "Terminal(..)"),
+        }
+    }
+}
+
+impl PaneContent {
+    /// Returns the buffer id if this pane is showing a buffer.
+    pub fn buffer_id(&self) -> Option<usize> {
+        match self {
+            PaneContent::Buffer(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub fn is_browser(&self) -> bool {
+        matches!(self, PaneContent::FileBrowser(_))
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, PaneContent::Terminal(_))
+    }
+
+    pub fn as_browser(&self) -> Option<&FileBrowser> {
+        match self {
+            PaneContent::FileBrowser(fb) => Some(fb),
+            _ => None,
+        }
+    }
+
+    pub fn as_browser_mut(&mut self) -> Option<&mut FileBrowser> {
+        match self {
+            PaneContent::FileBrowser(fb) => Some(fb),
+            _ => None,
+        }
+    }
+
+    pub fn as_terminal(&self) -> Option<&TerminalSession> {
+        match self {
+            PaneContent::Terminal(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn as_terminal_mut(&mut self) -> Option<&mut TerminalSession> {
+        match self {
+            PaneContent::Terminal(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Move the terminal out, replacing this content with Welcome.
+    pub fn take_terminal(&mut self) -> Option<TerminalSession> {
+        match std::mem::replace(self, PaneContent::Welcome) {
+            PaneContent::Terminal(t) => Some(t),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    /// Move the file browser out, replacing this content with Welcome.
+    pub fn take_browser(&mut self) -> Option<FileBrowser> {
+        match std::mem::replace(self, PaneContent::Welcome) {
+            PaneContent::FileBrowser(fb) => Some(fb),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    /// Check if another PaneContent refers to the same logical content.
+    pub fn same_identity(&self, other: &PaneContent) -> bool {
+        match (self, other) {
+            (PaneContent::Buffer(a), PaneContent::Buffer(b)) => a == b,
+            (PaneContent::FileBrowser(a), PaneContent::FileBrowser(b)) => a.current_dir == b.current_dir,
+            (PaneContent::Terminal(a), PaneContent::Terminal(b)) => a.id == b.id,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Pane {
     pub id: usize,
-    pub buffer_id: Option<usize>,
+    pub content: PaneContent,
     pub cursor: Cursor,
     pub scroll_offset: usize,
     cursor_cache: HashMap<usize, (Cursor, usize)>,
@@ -23,10 +122,10 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(buffer_id: Option<usize>) -> Self {
+    pub fn new(content: PaneContent) -> Self {
         Self {
             id: NEXT_PANE_ID.fetch_add(1, Ordering::Relaxed),
-            buffer_id,
+            content,
             cursor: Cursor::default(),
             scroll_offset: 0,
             cursor_cache: HashMap::new(),
@@ -36,7 +135,7 @@ impl Pane {
 
     /// Save current cursor for old buffer, restore saved cursor for new buffer (or default).
     pub fn switch_buffer(&mut self, new_id: usize) {
-        if let Some(old_id) = self.buffer_id {
+        if let PaneContent::Buffer(old_id) = self.content {
             self.cursor_cache
                 .insert(old_id, (self.cursor, self.scroll_offset));
         }
@@ -47,7 +146,7 @@ impl Pane {
             self.cursor = Cursor::default();
             self.scroll_offset = 0;
         }
-        self.buffer_id = Some(new_id);
+        self.content = PaneContent::Buffer(new_id);
     }
 }
 
@@ -439,7 +538,7 @@ pub struct PaneLayout {
 
 impl PaneLayout {
     pub fn new() -> Self {
-        let pane = Pane::new(None);
+        let pane = Pane::new(PaneContent::Welcome);
         let id = pane.id;
         Self {
             panes: vec![pane],
@@ -471,9 +570,20 @@ impl PaneLayout {
     }
 
     /// Split the active pane. Returns the new pane's id.
+    /// The new pane gets a copy of the content:
+    /// - Buffer: same buffer_id with same cursor
+    /// - FileBrowser: cloned browser
+    /// - Terminal: can't clone — new pane gets Welcome
+    /// - Welcome: Welcome
     pub fn split(&mut self, direction: SplitDirection) -> usize {
         let active = self.active_pane();
-        let mut new_pane = Pane::new(active.buffer_id);
+        let new_content = match &active.content {
+            PaneContent::Buffer(id) => PaneContent::Buffer(*id),
+            PaneContent::FileBrowser(fb) => PaneContent::FileBrowser(fb.clone()),
+            PaneContent::Terminal(_) => PaneContent::Welcome,
+            PaneContent::Welcome => PaneContent::Welcome,
+        };
+        let mut new_pane = Pane::new(new_content);
         new_pane.cursor = active.cursor;
         new_pane.scroll_offset = active.scroll_offset;
         let new_id = new_pane.id;
