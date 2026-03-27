@@ -245,12 +245,12 @@ Embedded terminal emulator using PTY + VTE parsing.
 - **Default shell**: PowerShell on Windows, `$SHELL` on Unix, fallback to system default.
 - **PTY management**: `portable-pty` crate for cross-platform PTY spawning (ConPTY on Windows, Unix PTYs). `vte` crate for VT100 escape sequence parsing.
 - **VTE support**: SGR colors (16, 256, true color RGB), cursor movement, erase operations, scroll regions, save/restore cursor, window title (OSC), bold/italic/underline/reverse/strikethrough modifiers.
-- **Lifecycle**: Terminals are killed when their pane is closed (`quit_current`), explicitly closed (`SPC b d`), or when the editor exits (`cleanup`). Child exit is detected via `check_exit()` polling on output receive. Exit message shown in grid and status line.
-- **Detach/reattach**: Navigating away from a terminal (opening a file, file browser, etc.) **detaches** it — the PTY process stays alive and the grid content is preserved. `detached_terminals: HashMap<usize, TerminalSession>` stores detached sessions. Jump history and the recent picker can reattach a detached terminal to any pane. `take_terminal_by_id()` searches both detached storage and other panes.
+- **Lifecycle**: Closing a pane (`:q`, `SPC w d`) **detaches** its terminal — the PTY stays alive. Only `SPC b d` (CloseBuffer) explicitly kills the terminal and removes it from recents. All terminals are killed on editor exit (`cleanup`). Child exit is detected via `check_exit()` polling on output receive.
+- **Detach/reattach**: Navigating away from a terminal (opening a file, file browser, etc.) **detaches** it — the PTY process stays alive and the grid content is preserved. `detached_terminals: HashMap<usize, TerminalSession>` stores detached sessions. Jump history and the recent picker can reattach a detached terminal to any pane via `reattach_terminal()`.
+- **Unique content swap**: Terminals are **unique content** (`PaneContent::is_unique() == true`) — they can only exist on one pane at a time. When the recent picker or jump history selects a terminal that's already on another pane, the two panes **swap content** instead of stealing. This prevents the donor pane from going blank. The swap is generic via `PaneLayout::swap_content()` and applies to any future unique content type.
 - **Recent panes**: The recent picker (`SPC b b`) tracks files, directories, and terminals. `recent_panes: Vec<RecentPane>` replaces the old `recent_paths`. Terminal entries show live title and "(exited)" status. `SPC b d` on a terminal kills it and removes it from recents.
-- **Resize**: `Event::Resize` propagates to all terminal sessions (attached and detached). Grid is resized and PTY notified.
+- **Resize**: Post-render resize loop updates attached terminals to match actual pane dimensions. `Event::Resize` only resizes detached terminals (as fallback). Grid is resized and PTY notified.
 - **Status line**: Shows "TERMINAL" mode indicator (green bg in Insert, blue in Normal), terminal title, and exit info if process ended.
-- **TODO**: When stealing a terminal from another pane via recent picker or jump history, the donor pane should jump back in its own history instead of showing the welcome screen. Requires cascading jump-back that avoids further steals.
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.

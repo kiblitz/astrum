@@ -99,6 +99,12 @@ impl PaneContent {
         }
     }
 
+    /// Whether this content can only exist on one pane at a time.
+    /// Unique content is swapped between panes rather than duplicated.
+    pub fn is_unique(&self) -> bool {
+        matches!(self, PaneContent::Terminal(_))
+    }
+
     /// Check if another PaneContent refers to the same logical content.
     pub fn same_identity(&self, other: &PaneContent) -> bool {
         match (self, other) {
@@ -635,6 +641,24 @@ impl PaneLayout {
 
     pub fn is_single(&self) -> bool {
         self.panes.len() == 1
+    }
+
+    /// Swap the content of two panes.
+    pub fn swap_content(&mut self, pane_a: usize, pane_b: usize) {
+        if pane_a == pane_b {
+            return;
+        }
+        let a_idx = self.panes.iter().position(|p| p.id == pane_a);
+        let b_idx = self.panes.iter().position(|p| p.id == pane_b);
+        if let (Some(a), Some(b)) = (a_idx, b_idx) {
+            // Split the slice to get two mutable references safely.
+            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+            let (left, right) = self.panes.split_at_mut(lo + 1);
+            std::mem::swap(
+                &mut left[lo].content,
+                &mut right[hi - lo - 1].content,
+            );
+        }
     }
 
     /// Focus the pane in the given direction relative to the active pane.

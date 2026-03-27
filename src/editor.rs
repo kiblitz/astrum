@@ -2160,20 +2160,7 @@ impl Editor {
                             self.open_file(path.to_string_lossy().as_ref()).await?;
                         }
                         RecentItemKind::Terminal { term_id } => {
-                            // Reattach the terminal. It could be detached, attached to
-                            // another pane, or already on this pane.
-                            // TODO: When stealing a terminal from another pane, that pane
-                            // should jump back in history instead of showing the welcome
-                            // screen. This requires jumping back until we find a view that
-                            // doesn't itself steal from another pane (to avoid cascading).
-                            self.detach_terminal_from_active_pane();
-                            let term = self.take_terminal_by_id(term_id);
-                            if let Some(term) = term {
-                                self.pane_layout.active_pane_mut().content = PaneContent::Terminal(term);
-                                self.input.mode = Mode::Insert;
-                            } else {
-                                let _ = self.open_terminal(None);
-                            }
+                            self.reattach_terminal(term_id)?;
                         }
                     }
                 }
@@ -2563,19 +2550,39 @@ impl Editor {
     }
 
     /// Capture the current state as a jump position.
-    /// Find and remove a terminal by its session ID from detached storage or any pane.
-    fn take_terminal_by_id(&mut self, term_id: usize) -> Option<crate::terminal::TerminalSession> {
-        self.detached_terminals.remove(&term_id).or_else(|| {
-            let other_pane = self.pane_layout.panes.iter()
-                .find(|p| p.content.as_terminal().map_or(false, |t| t.id == term_id))
-                .map(|p| p.id);
-            if let Some(pid) = other_pane {
-                self.pane_layout.pane_by_id_mut(pid)
-                    .and_then(|p| p.content.take_terminal())
-            } else {
-                None
-            }
-        })
+    /// Reattach a terminal to the active pane. If the terminal is on another pane,
+    /// the two panes swap content (unique content rule). If detached, it's placed
+    /// directly. If not found, a new terminal is opened.
+    fn reattach_terminal(&mut self, term_id: usize) -> Result<()> {
+        // Already on the active pane — nothing to do.
+        if self.pane_layout.active_pane().content.as_terminal()
+            .map_or(false, |t| t.id == term_id)
+        {
+            self.input.mode = Mode::Insert;
+            return Ok(());
+        }
+
+        // On another pane — swap content (unique content can only be on one pane).
+        let donor_id = self.pane_layout.panes.iter()
+            .find(|p| p.id != self.pane_layout.active_id
+                    && p.content.as_terminal().map_or(false, |t| t.id == term_id))
+            .map(|p| p.id);
+        if let Some(donor_id) = donor_id {
+            self.pane_layout.swap_content(self.pane_layout.active_id, donor_id);
+            self.input.mode = Mode::Insert;
+            return Ok(());
+        }
+
+        // Detached — place directly (detach current content first).
+        if let Some(term) = self.detached_terminals.remove(&term_id) {
+            self.detach_terminal_from_active_pane();
+            self.pane_layout.active_pane_mut().content = PaneContent::Terminal(term);
+            self.input.mode = Mode::Insert;
+            return Ok(());
+        }
+
+        // Terminal no longer exists — open a new one.
+        self.open_terminal(None)
     }
 
     /// Detach the terminal from the active pane, moving it to detached storage.
@@ -2686,13 +2693,7 @@ impl Editor {
                 self.pane_layout.active_pane_mut().content = PaneContent::FileBrowser(fb);
             }
             JumpPosition::Terminal { term_id } => {
-                let term = self.take_terminal_by_id(term_id);
-                if let Some(term) = term {
-                    self.pane_layout.active_pane_mut().content = PaneContent::Terminal(term);
-                    self.input.mode = Mode::Insert;
-                } else {
-                    let _ = self.open_terminal(None);
-                }
+                let _ = self.reattach_terminal(term_id);
             }
         }
     }
