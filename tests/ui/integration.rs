@@ -224,7 +224,7 @@ fn full_frame_file_browser() {
         make_dir_entry("Cargo.toml", false, 2048),
         make_dir_entry("README.md", false, 512),
     ]);
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let state = state.with_file_browser(pane_id, fb);
     let actual = render_to_string(80, 24, &state);

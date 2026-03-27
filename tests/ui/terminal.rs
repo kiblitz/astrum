@@ -5,7 +5,7 @@ use expect_test::expect;
 
 #[test]
 fn terminal_pane_shows_grid_content() {
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &[
         "$ echo hello",
@@ -43,7 +43,7 @@ fn terminal_pane_shows_grid_content() {
 
 #[test]
 fn terminal_status_line_insert_mode() {
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["$ "], "bash");
     let state = state.with_terminal(pane_id, term).with_mode(Mode::Insert);
@@ -77,7 +77,7 @@ fn terminal_status_line_insert_mode() {
 
 #[test]
 fn terminal_status_line_normal_mode() {
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["$ "], "bash");
     let state = state.with_terminal(pane_id, term).with_mode(Mode::Normal);
@@ -111,7 +111,7 @@ fn terminal_status_line_normal_mode() {
 
 #[test]
 fn terminal_exited_shows_message() {
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let mut term = make_terminal(20, 80, &["$ exit", ""], "[terminal]");
     term.exited = Some("Process exited (0)".to_string());
@@ -146,7 +146,7 @@ fn terminal_exited_shows_message() {
 
 #[test]
 fn terminal_with_title() {
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &["running..."], "my-shell");
     let state = state.with_terminal(pane_id, term).with_mode(Mode::Insert);
@@ -421,7 +421,7 @@ fn two_terminal_panes_split() {
 
 #[test]
 fn terminal_multiline_output() {
-    let mut state = RenderState::default();
+    let state = RenderState::default();
     let pane_id = state.pane_layout.active_id;
     let term = make_terminal(20, 80, &[
         "$ cat /etc/passwd",
@@ -543,9 +543,8 @@ fn terminal_wider_than_pane_left_split() {
 fn terminal_wider_than_pane_right_split() {
     // Buffer on left, oversized terminal on right. Terminal grid is 80 cols but pane is ~39.
     let state = RenderState::default();
-    let p1 = state.pane_layout.active_id;
+    let _p1 = state.pane_layout.active_id;
     let buf = make_buffer("fn main() {}\n", "main.rs");
-    let buf_id = buf.id;
     let mut state = state.with_buffer(buf);
 
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
@@ -598,7 +597,7 @@ fn terminal_to_buffer_transition_no_artifacts() {
     before.mode = Mode::Insert;
 
     // After: same pane now shows a buffer.
-    let mut after = RenderState::default();
+    let after = RenderState::default();
     let buf = make_buffer("fn main() {\n    println!(\"hello\");\n}\n", "main.rs");
     let after = after.with_buffer(buf);
 

@@ -921,7 +921,7 @@ fn move_pane_in_three_way_vertical_right_to_left() {
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
         pane.content = PaneContent::Buffer(buf2_id);
     }
-    let p1 = state.pane_layout.active_id;
+    let _p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
@@ -964,7 +964,7 @@ fn move_middle_pane_right_in_three_way() {
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
         pane.content = PaneContent::Buffer(buf2_id);
     }
-    let p1 = state.pane_layout.active_id;
+    let _p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
@@ -1006,7 +1006,7 @@ fn move_middle_pane_left_in_three_way() {
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
         pane.content = PaneContent::Buffer(buf2_id);
     }
-    let p1 = state.pane_layout.active_id;
+    let _p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
@@ -1770,7 +1770,7 @@ fn tree_structure_same_axis_swap() {
         .with_buffer(buf1)
         .with_extra_buffer(buf2)
         .with_extra_buffer(buf3);
-    let p_h = state.pane_layout.split(SplitDirection::Horizontal);
+    let _p_h = state.pane_layout.split(SplitDirection::Horizontal);
     let p_v = state.pane_layout.split(SplitDirection::Vertical);
 
     // Move p_v right — same axis (parent Vertical, target Vertical)

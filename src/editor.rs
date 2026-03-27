@@ -1428,64 +1428,7 @@ impl Editor {
                 self.switch_buffer_by_offset(-1);
             }
             Action::CloseBuffer => {
-                let pane_id = self.pane_layout.active_id;
-                let mut blocked = false;
-                let content = &self.pane_layout.active_pane().content;
-
-                // Check if another pane has the same content
-                let other_has_same = self.pane_layout.panes.iter()
-                    .any(|p| p.id != pane_id && p.content.same_identity(content));
-
-                match content {
-                    PaneContent::Terminal(_) if !other_has_same => {
-                        let mut term = self.pane_layout.active_pane_mut().content.take_terminal().unwrap();
-                        let term_id = term.id;
-                        term.kill();
-                        self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
-                    }
-                    PaneContent::FileBrowser(_) if !other_has_same => {
-                        if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
-                            let dir = fb.current_dir.clone();
-                            let clean = strip_unc_prefix(
-                                &std::fs::canonicalize(&dir).unwrap_or_else(|_| dir),
-                            );
-                            self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
-                        }
-                    }
-                    PaneContent::Buffer(buf_id) => {
-                        let buf_id = *buf_id;
-                        if let Some(buf_idx) = self.buffers.iter().position(|b| b.id == buf_id) {
-                            if self.buffers[buf_idx].modified {
-                                self.status_message = "Buffer has unsaved changes. Use :bd! to force close".into();
-                                blocked = true;
-                            } else if !other_has_same {
-                                if let Some(ref path) = self.buffers[buf_idx].path.clone() {
-                                    let clean = strip_unc_prefix(
-                                        &std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
-                                    );
-                                    self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
-                                }
-                                let removed = self.buffers.remove(buf_idx);
-                                let removed_id = removed.id;
-                                self.highlight_cache.invalidate(removed_id);
-                                self.highlight_engine.remove_buffer(removed_id);
-                                self.swap_manager.unregister(removed_id);
-                                for pane in &mut self.pane_layout.panes {
-                                    if let PaneContent::Buffer(bid) = pane.content {
-                                        if bid == removed_id {
-                                            pane.content = PaneContent::Welcome;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                if !blocked {
-                    self.pane_layout.close_active();
-                    self.jump_history.remove(&pane_id);
-                }
+                self.close_buffer_and_pane();
             }
 
             // Window management
@@ -1533,10 +1476,7 @@ impl Editor {
             }
             Action::ClosePane => {
                 let old_id = self.pane_layout.active_id;
-                // Detach terminal so it keeps running in the background.
-                if let Some(term) = self.pane_layout.active_pane_mut().content.take_terminal() {
-                    self.detached_terminals.insert(term.id, term);
-                }
+                self.detach_terminal_from_active_pane();
                 self.pane_layout.close_active();
                 self.jump_history.remove(&old_id);
             }
@@ -1652,65 +1592,7 @@ impl Editor {
             }
 
             Action::CommentToggle => {
-                // Look up comment syntax from active buffer's file extension.
-                let syntax = self.sync_buffer(|b| {
-                    b.path.as_ref().and_then(|p| {
-                        p.extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.to_string())
-                    })
-                }).flatten().and_then(|ext| {
-                    self.comment_syntax.get(&ext).cloned()
-                });
-
-                let Some(syntax) = syntax else {
-                    self.status_message = "No comment syntax for this file type".to_string();
-                    return Ok(());
-                };
-
-                if self.visual_anchor.is_some() {
-                    // Visual mode: block comment around selection.
-                    if let Some((open, close)) = &syntax.block {
-                        let range = self.visual_char_range();
-                        if let Some((start, end)) = range {
-                            let open = open.clone();
-                            let close = close.clone();
-                            self.with_buffer_edit(|b| {
-                                b.toggle_block_comment(start, end, &open, &close);
-                                None
-                            });
-                            self.rehighlight_active();
-                        }
-                    } else if let Some(prefix) = &syntax.line {
-                        // Fallback to line comments if no block syntax.
-                        let cursor_line = self.pane_layout.active_pane().cursor.line;
-                        let anchor_line = self.visual_anchor.unwrap().0;
-                        let first = anchor_line.min(cursor_line);
-                        let last = anchor_line.max(cursor_line);
-                        let prefix = prefix.clone();
-                        self.with_buffer_edit(|b| {
-                            b.toggle_line_comment(first, last, &prefix);
-                            None
-                        });
-                        self.rehighlight_active();
-                    } else {
-                        self.status_message = "No comment syntax for this file type".to_string();
-                    }
-                    self.exit_visual_mode();
-                } else {
-                    // Normal mode: line comment on current line.
-                    if let Some(prefix) = &syntax.line {
-                        let line = self.pane_layout.active_pane().cursor.line;
-                        let prefix = prefix.clone();
-                        self.with_buffer_edit(|b| {
-                            b.toggle_line_comment(line, line, &prefix);
-                            None
-                        });
-                        self.rehighlight_active();
-                    } else {
-                        self.status_message = "No line comment syntax for this file type".to_string();
-                    }
-                }
+                self.toggle_comment();
             }
 
             Action::Noop => {}
@@ -1943,10 +1825,7 @@ impl Editor {
     fn quit_current(&mut self, force: bool) {
         if !self.pane_layout.is_single() {
             let pane_id = self.pane_layout.active_id;
-            // Detach terminal so it keeps running in the background.
-            if let Some(term) = self.pane_layout.active_pane_mut().content.take_terminal() {
-                self.detached_terminals.insert(term.id, term);
-            }
+            self.detach_terminal_from_active_pane();
             self.pane_layout.close_active();
             self.jump_history.remove(&pane_id);
         } else if force || self.confirm_double_quit() {
@@ -1954,6 +1833,130 @@ impl Editor {
         }
     }
 
+    /// `SPC b d` — close the pane and delete content from the system.
+    /// Terminals are killed, buffers are removed, recents are cleaned up.
+    fn close_buffer_and_pane(&mut self) {
+        let pane_id = self.pane_layout.active_id;
+        let mut blocked = false;
+        let content = &self.pane_layout.active_pane().content;
+
+        // Check if another pane has the same content.
+        let other_has_same = self.pane_layout.panes.iter()
+            .any(|p| p.id != pane_id && p.content.same_identity(content));
+
+        match content {
+            PaneContent::Terminal(_) if !other_has_same => {
+                let mut term = self.pane_layout.active_pane_mut().content.take_terminal().unwrap();
+                let term_id = term.id;
+                term.kill();
+                self.recent_panes.retain(|r| !matches!(r, RecentPane::Terminal { term_id: id, .. } if *id == term_id));
+            }
+            PaneContent::FileBrowser(_) if !other_has_same => {
+                if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
+                    let dir = fb.current_dir.clone();
+                    let clean = strip_unc_prefix(
+                        &std::fs::canonicalize(&dir).unwrap_or_else(|_| dir),
+                    );
+                    self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+                }
+            }
+            PaneContent::Buffer(buf_id) => {
+                let buf_id = *buf_id;
+                if let Some(buf_idx) = self.buffers.iter().position(|b| b.id == buf_id) {
+                    if self.buffers[buf_idx].modified {
+                        self.status_message = "Buffer has unsaved changes. Use :bd! to force close".into();
+                        blocked = true;
+                    } else if !other_has_same {
+                        if let Some(ref path) = self.buffers[buf_idx].path.clone() {
+                            let clean = strip_unc_prefix(
+                                &std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+                            );
+                            self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
+                        }
+                        let removed = self.buffers.remove(buf_idx);
+                        let removed_id = removed.id;
+                        self.highlight_cache.invalidate(removed_id);
+                        self.highlight_engine.remove_buffer(removed_id);
+                        self.swap_manager.unregister(removed_id);
+                        for pane in &mut self.pane_layout.panes {
+                            if let PaneContent::Buffer(bid) = pane.content {
+                                if bid == removed_id {
+                                    pane.content = PaneContent::Welcome;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !blocked {
+            self.pane_layout.close_active();
+            self.jump_history.remove(&pane_id);
+        }
+    }
+
+    /// Toggle line/block comments on the current line or visual selection.
+    fn toggle_comment(&mut self) {
+        let syntax = self.sync_buffer(|b| {
+            b.path.as_ref().and_then(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_string())
+            })
+        }).flatten().and_then(|ext| {
+            self.comment_syntax.get(&ext).cloned()
+        });
+
+        let Some(syntax) = syntax else {
+            self.status_message = "No comment syntax for this file type".to_string();
+            return;
+        };
+
+        if self.visual_anchor.is_some() {
+            // Visual mode: block comment around selection.
+            if let Some((open, close)) = &syntax.block {
+                let range = self.visual_char_range();
+                if let Some((start, end)) = range {
+                    let open = open.clone();
+                    let close = close.clone();
+                    self.with_buffer_edit(|b| {
+                        b.toggle_block_comment(start, end, &open, &close);
+                        None
+                    });
+                    self.rehighlight_active();
+                }
+            } else if let Some(prefix) = &syntax.line {
+                // Fallback to line comments if no block syntax.
+                let cursor_line = self.pane_layout.active_pane().cursor.line;
+                let anchor_line = self.visual_anchor.unwrap().0;
+                let first = anchor_line.min(cursor_line);
+                let last = anchor_line.max(cursor_line);
+                let prefix = prefix.clone();
+                self.with_buffer_edit(|b| {
+                    b.toggle_line_comment(first, last, &prefix);
+                    None
+                });
+                self.rehighlight_active();
+            } else {
+                self.status_message = "No comment syntax for this file type".to_string();
+            }
+            self.exit_visual_mode();
+        } else {
+            // Normal mode: line comment on current line.
+            if let Some(prefix) = &syntax.line {
+                let line = self.pane_layout.active_pane().cursor.line;
+                let prefix = prefix.clone();
+                self.with_buffer_edit(|b| {
+                    b.toggle_line_comment(line, line, &prefix);
+                    None
+                });
+                self.rehighlight_active();
+            } else {
+                self.status_message = "No line comment syntax for this file type".to_string();
+            }
+        }
+    }
 
     fn close_current_buffer(&mut self, force: bool) {
         if self.buffers.is_empty() || self.active_buffer_idx().is_none() {
