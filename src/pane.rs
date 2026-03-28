@@ -16,7 +16,7 @@ pub enum SplitDirection {
 /// What a pane is currently displaying. A pane shows exactly one thing at a time.
 pub enum PaneContent {
     Welcome,
-    Buffer(usize),              // buffer_id (actual Buffer stored centrally)
+    Editor(usize),              // buffer_id (TextBuffer stored centrally)
     FileBrowser(FileBrowser),   // owned by pane
     Terminal(TerminalSession),  // owned by pane
 }
@@ -25,7 +25,7 @@ impl std::fmt::Debug for PaneContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PaneContent::Welcome => write!(f, "Welcome"),
-            PaneContent::Buffer(id) => write!(f, "Buffer({id})"),
+            PaneContent::Editor(id) => write!(f, "Buffer({id})"),
             PaneContent::FileBrowser(_) => write!(f, "FileBrowser(..)"),
             PaneContent::Terminal(_) => write!(f, "Terminal(..)"),
         }
@@ -36,7 +36,7 @@ impl PaneContent {
     /// Returns the buffer id if this pane is showing a buffer.
     pub fn buffer_id(&self) -> Option<usize> {
         match self {
-            PaneContent::Buffer(id) => Some(*id),
+            PaneContent::Editor(id) => Some(*id),
             _ => None,
         }
     }
@@ -108,7 +108,7 @@ impl PaneContent {
     /// Check if another PaneContent refers to the same logical content.
     pub fn same_identity(&self, other: &PaneContent) -> bool {
         match (self, other) {
-            (PaneContent::Buffer(a), PaneContent::Buffer(b)) => a == b,
+            (PaneContent::Editor(a), PaneContent::Editor(b)) => a == b,
             (PaneContent::FileBrowser(a), PaneContent::FileBrowser(b)) => a.current_dir == b.current_dir,
             (PaneContent::Terminal(a), PaneContent::Terminal(b)) => a.id == b.id,
             _ => false,
@@ -144,7 +144,7 @@ impl Pane {
 
     /// Save current cursor for old buffer, restore saved cursor for new buffer (or default).
     pub fn switch_buffer(&mut self, new_id: usize) {
-        if let PaneContent::Buffer(old_id) = self.content {
+        if let PaneContent::Editor(old_id) = self.content {
             self.cursor_cache
                 .insert(old_id, (self.cursor, self.scroll_offset));
         }
@@ -155,7 +155,7 @@ impl Pane {
             self.cursor = Cursor::default();
             self.scroll_offset = 0;
         }
-        self.content = PaneContent::Buffer(new_id);
+        self.content = PaneContent::Editor(new_id);
     }
 }
 
@@ -587,7 +587,7 @@ impl PaneLayout {
     pub fn split(&mut self, direction: SplitDirection) -> usize {
         let active = self.active_pane();
         let new_content = match &active.content {
-            PaneContent::Buffer(id) => PaneContent::Buffer(*id),
+            PaneContent::Editor(id) => PaneContent::Editor(*id),
             PaneContent::FileBrowser(fb) => PaneContent::FileBrowser(fb.clone()),
             PaneContent::Terminal(_) => PaneContent::Welcome,
             PaneContent::Welcome => PaneContent::Welcome,

@@ -117,10 +117,10 @@ fn single_field_rejected() {
 
 // -- Replacement logic tests (using Buffer directly) --
 
-use astrum::buffer::Buffer;
+use astrum::buffer::TextBuffer;
 
-fn make_buffer(text: &str) -> Buffer {
-    let mut b = Buffer::new_scratch();
+fn make_buffer(text: &str) -> TextBuffer {
+    let mut b = TextBuffer::new_scratch();
     b.rope = ropey::Rope::from_str(text);
     b
 }

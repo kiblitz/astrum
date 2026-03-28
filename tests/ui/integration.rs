@@ -79,7 +79,7 @@ fn full_frame_two_panes_vertical() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(80, 24, &state);
     check(&actual, expect![[r#"
@@ -452,7 +452,7 @@ fn full_frame_horizontal_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(80, 24, &state);
     check(&actual, expect![[r#"
@@ -754,7 +754,7 @@ fn full_frame_split_with_search() {
         .with_search_matches(buf2_id, vec![(0, 4, 7)], None);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(80, 16, &state);
     check(&actual, expect![[r#"

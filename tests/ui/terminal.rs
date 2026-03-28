@@ -189,7 +189,7 @@ fn terminal_left_buffer_right_split() {
     let buf = make_buffer("fn main() {}\n", "main.rs");
     let buf_id = buf.id;
     state.buffers.push(buf);
-    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Buffer(buf_id);
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Editor(buf_id);
 
     // Focus on terminal pane.
     state.pane_layout.active_id = p1;
@@ -233,7 +233,7 @@ fn terminal_top_buffer_bottom_split() {
     let buf = make_buffer("hello world\n", "test.txt");
     let buf_id = buf.id;
     state.buffers.push(buf);
-    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Buffer(buf_id);
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Editor(buf_id);
 
     state.pane_layout.active_id = p1;
     let state = state.with_mode(Mode::Normal);
@@ -508,7 +508,7 @@ fn terminal_wider_than_pane_left_split() {
     let buf = make_buffer("fn main() {}\n", "main.rs");
     let buf_id = buf.id;
     state.buffers.push(buf);
-    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Buffer(buf_id);
+    state.pane_layout.pane_by_id_mut(p2).unwrap().content = PaneContent::Editor(buf_id);
 
     state.pane_layout.active_id = p1;
     let state = state.with_mode(Mode::Insert);

@@ -1,6 +1,6 @@
 use crate::action::SearchDirection;
-use crate::buffer::{Buffer, Cursor};
-use crate::editor::{FindFileState, PaletteState, RecentPickerState, SearchState};
+use crate::buffer::{TextBuffer, Cursor};
+use crate::editor::{FindFileState, PaletteState, Popup, RecentPickerState, SearchState};
 use crate::file_browser::{format_size, BrowserInputMode, FileBrowser};
 use crate::input::Mode;
 use crate::pane::{LayoutNode, PaneContent, PaneLayout, SplitDirection};
@@ -21,7 +21,7 @@ impl Renderer {
     pub fn render(
         &self,
         frame: &mut Frame,
-        buffers: &[Buffer],
+        buffers: &[TextBuffer],
         pane_layout: &PaneLayout,
         mode: &Mode,
         command_buffer: &str,
@@ -29,8 +29,7 @@ impl Renderer {
         pending_keys: &str,
         pending_hints: &[(String, String)],
         highlight_cache: &HighlightCache,
-        palette: &Option<PaletteState>,
-        find_file: &Option<FindFileState>,
+        popup: &Option<Popup>,
         search_state: &SearchState,
         search_buffer: &str,
         search_direction: SearchDirection,
@@ -38,10 +37,9 @@ impl Renderer {
         substitute_highlight: Option<(usize, usize, usize)>,
         recording_macro: Option<char>,
         config_error: Option<&str>,
-        recent_picker: &Option<RecentPickerState>,
     ) {
         let size = frame.area();
-        let has_overlay = find_file.is_some() || palette.is_some() || recent_picker.is_some();
+        let has_overlay = popup.is_some();
 
         // Compute active_buf_idx from pane_layout
         let active_buf_idx = pane_layout
@@ -92,7 +90,7 @@ impl Renderer {
                 PaneContent::FileBrowser(fb) => {
                     self.render_file_browser_status(frame, chunks[2], fb);
                 }
-                PaneContent::Buffer(_) => {
+                PaneContent::Editor(_) => {
                     let active_pane = pane_layout.active_pane();
                     if let Some(buf) = active_pane.content.buffer_id().and_then(|bid| buffers.iter().find(|b| b.id == bid)) {
                         self.render_status_line(frame, chunks[2], buf, &active_pane.cursor, mode);
@@ -128,14 +126,11 @@ impl Renderer {
         );
 
         // Overlays
-        if let Some(ff) = find_file {
-            self.render_find_file(frame, size, ff);
-        }
-        if let Some(palette) = palette {
-            self.render_palette(frame, size, palette);
-        }
-        if let Some(rp) = recent_picker {
-            self.render_recent_picker(frame, size, rp);
+        match popup {
+            Some(Popup::FindFile(ff)) => self.render_find_file(frame, size, ff),
+            Some(Popup::Palette(palette)) => self.render_palette(frame, size, palette),
+            Some(Popup::RecentPicker(rp)) => self.render_recent_picker(frame, size, rp),
+            None => {}
         }
 
         // Cursor positioning: only set cursor when it should be visible.
@@ -173,7 +168,7 @@ impl Renderer {
         area: Rect,
         node: &LayoutNode,
         pane_layout: &PaneLayout,
-        buffers: &[Buffer],
+        buffers: &[TextBuffer],
         highlight_cache: &HighlightCache,
         show_cursor: bool,
         search_state: &SearchState,
@@ -219,7 +214,7 @@ impl Renderer {
                         PaneContent::FileBrowser(fb) => {
                             self.render_file_browser(frame, content_area, fb);
                         }
-                        PaneContent::Buffer(buf_id) => {
+                        PaneContent::Editor(buf_id) => {
                             if let Some(buf) = buffers.iter().find(|b| b.id == *buf_id) {
                                 let pane_visual = if is_active && *mode == Mode::Visual { visual_anchor } else { None };
                                 let pane_sub_hl = if is_active { substitute_highlight } else { None };
@@ -237,7 +232,7 @@ impl Renderer {
                     if let Some(ind_area) = indicator_area {
                         let buf_name = match &pane.content {
                             PaneContent::Terminal(term) => term.title.as_str(),
-                            PaneContent::Buffer(buf_id) => {
+                            PaneContent::Editor(buf_id) => {
                                 buffers.iter().find(|b| b.id == *buf_id)
                                     .map(|b| b.name.as_str())
                                     .unwrap_or("[No File]")
@@ -727,7 +722,7 @@ impl Renderer {
         &self,
         frame: &mut Frame,
         area: Rect,
-        buffers: &[Buffer],
+        buffers: &[TextBuffer],
         active_idx: usize,
     ) {
         let titles: Vec<Line> = buffers
@@ -769,7 +764,7 @@ impl Renderer {
         &self,
         frame: &mut Frame,
         area: Rect,
-        buf: &Buffer,
+        buf: &TextBuffer,
         cursor: &Cursor,
         scroll_offset: usize,
         is_active: bool,
@@ -917,7 +912,7 @@ impl Renderer {
         &self,
         frame: &mut Frame,
         area: Rect,
-        buf: &Buffer,
+        buf: &TextBuffer,
         cursor: &Cursor,
         mode: &Mode,
     ) {
@@ -1396,7 +1391,7 @@ fn visual_line_range(
     anchor_col: usize,
     cursor_line: usize,
     cursor_col: usize,
-    buf: &Buffer,
+    buf: &TextBuffer,
 ) -> Option<(usize, usize)> {
     // Normalize so start <= end
     let (start_line, start_col, end_line, end_col) = if (anchor_line, anchor_col) <= (cursor_line, cursor_col) {
@@ -1487,7 +1482,7 @@ fn bracket_pair(c: char) -> Option<(char, bool)> {
 
 /// Find the matching bracket for the character at (line, col).
 /// Returns Some((match_line, match_col)) or None.
-fn find_matching_bracket(buf: &Buffer, line: usize, col: usize) -> Option<(usize, usize)> {
+fn find_matching_bracket(buf: &TextBuffer, line: usize, col: usize) -> Option<(usize, usize)> {
     if line >= buf.rope.len_lines() {
         return None;
     }

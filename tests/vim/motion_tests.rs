@@ -1,16 +1,16 @@
-use astrum::buffer::Buffer;
+use astrum::buffer::TextBuffer;
 use expect_test::{expect, Expect};
 use ropey::Rope;
 
-fn buf(text: &str, line: usize, col: usize) -> Buffer {
-    let mut b = Buffer::new_scratch();
+fn buf(text: &str, line: usize, col: usize) -> TextBuffer {
+    let mut b = TextBuffer::new_scratch();
     b.rope = Rope::from_str(text);
     b.cursor.line = line;
     b.cursor.col = col;
     b
 }
 
-fn pos(b: &Buffer) -> String {
+fn pos(b: &TextBuffer) -> String {
     format!("({},{})", b.cursor.line, b.cursor.col)
 }
 

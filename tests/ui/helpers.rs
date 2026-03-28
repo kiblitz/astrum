@@ -1,8 +1,8 @@
 use astrum::action::SearchDirection;
-use astrum::buffer::Buffer;
+use astrum::buffer::TextBuffer;
 use astrum::editor::{
-    BufferSearchMatches, FindFileState, PaletteItem, PaletteState, RecentItem, RecentItemKind, RecentPickerState,
-    SearchState,
+    BufferSearchMatches, FindFileState, PaletteItem, PaletteState, Popup, RecentItem, RecentItemKind,
+    RecentPickerState, SearchState,
 };
 use astrum::file_browser::{DirEntry, FileBrowser};
 use astrum::input::Mode;
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 /// All state needed to call `renderer.render()`. Builder pattern with sensible defaults.
 pub struct RenderState {
-    pub buffers: Vec<Buffer>,
+    pub buffers: Vec<TextBuffer>,
     pub pane_layout: PaneLayout,
     pub mode: Mode,
     pub command_buffer: String,
@@ -27,8 +27,7 @@ pub struct RenderState {
     pub pending_keys: String,
     pub pending_hints: Vec<(String, String)>,
     pub highlight_cache: HighlightCache,
-    pub palette: Option<PaletteState>,
-    pub find_file: Option<FindFileState>,
+    pub popup: Option<Popup>,
     pub search_state: SearchState,
     pub search_buffer: String,
     pub search_direction: SearchDirection,
@@ -36,7 +35,6 @@ pub struct RenderState {
     pub substitute_highlight: Option<(usize, usize, usize)>,
     pub recording_macro: Option<char>,
     pub config_error: Option<String>,
-    pub recent_picker: Option<RecentPickerState>,
 }
 
 impl Default for RenderState {
@@ -50,8 +48,7 @@ impl Default for RenderState {
             pending_keys: String::new(),
             pending_hints: Vec::new(),
             highlight_cache: HighlightCache::new(),
-            palette: None,
-            find_file: None,
+            popup: None,
             search_state: SearchState {
                 last_pattern: None,
                 last_direction: SearchDirection::Forward,
@@ -63,24 +60,23 @@ impl Default for RenderState {
             substitute_highlight: None,
             recording_macro: None,
             config_error: None,
-            recent_picker: None,
         }
     }
 }
 
 impl RenderState {
     /// Add a buffer and assign it to the active pane.
-    pub fn with_buffer(mut self, buf: Buffer) -> Self {
+    pub fn with_buffer(mut self, buf: TextBuffer) -> Self {
         let buf_id = buf.id;
         self.buffers.push(buf);
         if let Some(pane) = self.pane_layout.pane_by_id_mut(self.pane_layout.active_id) {
-            pane.content = PaneContent::Buffer(buf_id);
+            pane.content = PaneContent::Editor(buf_id);
         }
         self
     }
 
     /// Add a buffer without assigning it to a pane (for tab bar tests).
-    pub fn with_extra_buffer(mut self, buf: Buffer) -> Self {
+    pub fn with_extra_buffer(mut self, buf: TextBuffer) -> Self {
         self.buffers.push(buf);
         self
     }
@@ -146,17 +142,17 @@ impl RenderState {
     }
 
     pub fn with_palette(mut self, palette: PaletteState) -> Self {
-        self.palette = Some(palette);
+        self.popup = Some(Popup::Palette(palette));
         self
     }
 
     pub fn with_find_file(mut self, ff: FindFileState) -> Self {
-        self.find_file = Some(ff);
+        self.popup = Some(Popup::FindFile(ff));
         self
     }
 
     pub fn with_recent_picker(mut self, rp: RecentPickerState) -> Self {
-        self.recent_picker = Some(rp);
+        self.popup = Some(Popup::RecentPicker(rp));
         self
     }
 
@@ -193,8 +189,7 @@ pub fn render_to_string(width: u16, height: u16, state: &RenderState) -> String 
                 &state.pending_keys,
                 &state.pending_hints,
                 &state.highlight_cache,
-                &state.palette,
-                &state.find_file,
+                &state.popup,
                 &state.search_state,
                 &state.search_buffer,
                 state.search_direction,
@@ -202,7 +197,6 @@ pub fn render_to_string(width: u16, height: u16, state: &RenderState) -> String 
                 state.substitute_highlight,
                 state.recording_macro,
                 state.config_error.as_deref(),
-                &state.recent_picker,
             );
         })
         .unwrap();
@@ -245,8 +239,7 @@ pub fn render_transition_to_string(width: u16, height: u16, before: &RenderState
                 &before.pending_keys,
                 &before.pending_hints,
                 &before.highlight_cache,
-                &before.palette,
-                &before.find_file,
+                &before.popup,
                 &before.search_state,
                 &before.search_buffer,
                 before.search_direction,
@@ -254,7 +247,6 @@ pub fn render_transition_to_string(width: u16, height: u16, before: &RenderState
                 before.substitute_highlight,
                 before.recording_macro,
                 before.config_error.as_deref(),
-                &before.recent_picker,
             );
         })
         .unwrap();
@@ -272,8 +264,7 @@ pub fn render_transition_to_string(width: u16, height: u16, before: &RenderState
                 &after.pending_keys,
                 &after.pending_hints,
                 &after.highlight_cache,
-                &after.palette,
-                &after.find_file,
+                &after.popup,
                 &after.search_state,
                 &after.search_buffer,
                 after.search_direction,
@@ -281,7 +272,6 @@ pub fn render_transition_to_string(width: u16, height: u16, before: &RenderState
                 after.substitute_highlight,
                 after.recording_macro,
                 after.config_error.as_deref(),
-                &after.recent_picker,
             );
         })
         .unwrap();
@@ -307,8 +297,8 @@ pub fn check(actual: &str, expect: Expect) {
 }
 
 /// Create a buffer with text, name, and cursor at (0, 0).
-pub fn make_buffer(text: &str, name: &str) -> Buffer {
-    let mut b = Buffer::new_scratch();
+pub fn make_buffer(text: &str, name: &str) -> TextBuffer {
+    let mut b = TextBuffer::new_scratch();
     b.rope = Rope::from_str(text);
     b.name = name.to_string();
     b.path = Some(PathBuf::from(name));
@@ -316,7 +306,7 @@ pub fn make_buffer(text: &str, name: &str) -> Buffer {
 }
 
 /// Create a buffer with text, name, and cursor at given position.
-pub fn make_buffer_at(text: &str, name: &str, line: usize, col: usize) -> Buffer {
+pub fn make_buffer_at(text: &str, name: &str, line: usize, col: usize) -> TextBuffer {
     let mut b = make_buffer(text, name);
     b.cursor.line = line;
     b.cursor.col = col;

@@ -32,7 +32,7 @@ fn vertical_split_two_panes() {
         .with_extra_buffer(buf2);
     let new_pane = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(new_pane) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(60, 12, &state);
     check(&actual, expect![[r#"
@@ -60,7 +60,7 @@ fn horizontal_split_two_panes() {
         .with_extra_buffer(buf2);
     let new_pane = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(new_pane) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(60, 12, &state);
     check(&actual, expect![[r#"
@@ -88,7 +88,7 @@ fn vertical_split_active_indicator() {
         .with_extra_buffer(buf2);
     let new_pane = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(new_pane) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Active pane is still the first one.
     let actual = render_to_string(60, 12, &state);
@@ -120,11 +120,11 @@ fn three_way_vertical_split() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let actual = render_to_string(80, 12, &state);
     check(&actual, expect![[r#"
@@ -179,13 +179,13 @@ fn nested_splits() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Focus p2, then split horizontally.
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let actual = render_to_string(80, 16, &state);
     check(&actual, expect![[r#"
@@ -217,7 +217,7 @@ fn very_narrow_vertical_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(24, 8, &state);
     check(&actual, expect![[r#"
@@ -241,7 +241,7 @@ fn very_short_horizontal_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(40, 8, &state);
     check(&actual, expect![[r#"
@@ -271,19 +271,19 @@ fn four_way_split() {
         .with_extra_buffer(buf4);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Split first pane horizontally
     state.pane_layout.active_id = state.pane_layout.panes[0].id;
     let p3 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Split second pane horizontally
     state.pane_layout.active_id = p2;
     let p4 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p4) {
-        pane.content = PaneContent::Buffer(buf4_id);
+        pane.content = PaneContent::Editor(buf4_id);
     }
     let actual = render_to_string(80, 16, &state);
     check(&actual, expect![[r#"
@@ -316,7 +316,7 @@ fn split_with_modified_buffers() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let actual = render_to_string(60, 10, &state);
     check(&actual, expect![[r#"
@@ -342,7 +342,7 @@ fn split_active_right_pane() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Make the right pane active
     state.pane_layout.active_id = p2;
@@ -373,11 +373,11 @@ fn three_horizontal_splits() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let actual = render_to_string(60, 16, &state);
     check(&actual, expect![[r#"
@@ -419,12 +419,12 @@ fn move_bottom_pane_right_in_horizontal_split() {
     // Split active pane horizontally: top and bottom
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Split top pane vertically: top-left and top-right
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Focus the bottom pane and move it right
     state.pane_layout.active_id = p2;
@@ -467,11 +467,11 @@ fn move_bottom_pane_left_in_horizontal_split() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Left);
@@ -511,11 +511,11 @@ fn move_right_pane_down_in_vertical_split() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Down);
@@ -559,12 +559,12 @@ fn move_top_right_pane_down_in_nested_layout() {
     // Split horizontally first: top and bottom
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Split top vertically: TL and TR
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Focus TR and move it down
     state.pane_layout.active_id = p3;
@@ -605,11 +605,11 @@ fn move_top_left_pane_down_in_nested_layout() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p1 = state.pane_layout.active_id;
     // Focus is on TL (the original active pane before splits)
@@ -654,11 +654,11 @@ fn move_bottom_pane_up_in_nested_layout() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Up);
@@ -698,11 +698,11 @@ fn move_left_pane_right_in_nested_layout() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p1;
@@ -740,7 +740,7 @@ fn move_pane_down_simple_horizontal_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p1;
@@ -774,7 +774,7 @@ fn move_pane_up_simple_horizontal_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Up);
@@ -807,7 +807,7 @@ fn move_pane_right_simple_vertical_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p1;
@@ -841,7 +841,7 @@ fn move_pane_left_simple_vertical_split() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Left);
@@ -877,11 +877,11 @@ fn move_pane_in_three_way_vertical_left_to_right() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Focus A (first pane) and move right
     let p1 = state.pane_layout.active_id;
@@ -919,13 +919,13 @@ fn move_pane_in_three_way_vertical_right_to_left() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let _p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Focus C (last pane) and move left
     state.pane_layout.active_id = p3;
@@ -962,13 +962,13 @@ fn move_middle_pane_right_in_three_way() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let _p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Right);
@@ -1004,13 +1004,13 @@ fn move_middle_pane_left_in_three_way() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let _p1 = state.pane_layout.active_id;
     state.pane_layout.active_id = p2;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     state.pane_layout.active_id = p2;
     state.pane_layout.move_direction(FocusDirection::Left);
@@ -1046,11 +1046,11 @@ fn move_top_right_pane_left_in_nested_layout() {
         .with_extra_buffer(buf3);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p3;
     state.pane_layout.move_direction(FocusDirection::Left);
@@ -1093,17 +1093,17 @@ fn move_pane_down_across_axis_four_panes() {
     // Split top into A|B
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Focus bottom pane
     state.pane_layout.active_id = p2;
     // Split bottom into C|D
     let p4 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p4) {
-        pane.content = PaneContent::Buffer(buf4_id);
+        pane.content = PaneContent::Editor(buf4_id);
     }
     // Move B down
     state.pane_layout.active_id = p3;
@@ -1148,20 +1148,20 @@ fn move_top_right_down_in_three_row_layout() {
     // Create: Horizontal { [p1(TL), p2, p4] }
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Split p2 (second row) to add a third row
     state.pane_layout.active_id = p2;
     let p4 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p4) {
-        pane.content = PaneContent::Buffer(buf4_id);
+        pane.content = PaneContent::Editor(buf4_id);
     }
     // Now split top pane (p1) vertically: TL and TR
     let p1 = state.pane_layout.panes[0].id; // original first pane
     state.pane_layout.active_id = p1;
     let p3 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Layout should be: Horizontal { Vertical{TL, TR}, MID, BOT }
     // Focus TR and move it down
@@ -1206,12 +1206,12 @@ fn move_nested_pane_down_in_vertical_root() {
     // Vertical split: left and right
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // Horizontal split of left: TL and BL
     let p3 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p3) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Layout: Vertical { Horizontal{TL(p1), BL(p3)}, RT(p2) }
     let p1 = state.pane_layout.active_id;
@@ -1255,12 +1255,12 @@ fn move_pane2_down_in_horizontal_vertical_3() {
     // active = pane1. Split horizontal → Horizontal{pane1, pane_h}
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     // active = pane1. Split vertical on pane1 → Horizontal{Vertical{pane1, pane_v}, pane_h}
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Focus pane2 (the right pane in the vertical split) and move down
     state.pane_layout.active_id = pane_v;
@@ -1302,11 +1302,11 @@ fn move_pane1_down_in_horizontal_vertical_3() {
         .with_extra_buffer(buf3);
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // Focus pane1 (the left pane in the vertical split) and move down
     let pane1 = state.pane_layout.active_id;
@@ -1349,11 +1349,11 @@ fn move_pane3_up_in_horizontal_vertical_3() {
         .with_extra_buffer(buf3);
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = pane_h;
     let result = state.pane_layout.move_direction(FocusDirection::Up);
@@ -1394,11 +1394,11 @@ fn move_pane2_right_in_horizontal_vertical_3() {
         .with_extra_buffer(buf3);
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     // pane2 is already rightmost in its Vertical split — moving right should do nothing or wrap
     state.pane_layout.active_id = pane_v;
@@ -1439,11 +1439,11 @@ fn move_pane2_left_in_horizontal_vertical_3() {
         .with_extra_buffer(buf3);
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = pane_v;
     state.pane_layout.move_direction(FocusDirection::Left);
@@ -1483,7 +1483,7 @@ fn move_pane_across_axis_then_back() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let p1 = state.pane_layout.active_id;
     // Move A (left pane) down — crosses axis
@@ -1522,11 +1522,11 @@ fn move_pane_down_vertical_first_then_horizontal() {
         .with_extra_buffer(buf3);
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     state.pane_layout.active_id = pane_h;
     let result = state.pane_layout.move_direction(FocusDirection::Right);
@@ -1567,11 +1567,11 @@ fn move_pane_up_vertical_first_then_horizontal() {
         .with_extra_buffer(buf3);
     let pane_v = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_v) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let pane_h = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(pane_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     state.pane_layout.active_id = pane_h;
     let result = state.pane_layout.move_direction(FocusDirection::Up);
@@ -1616,15 +1616,15 @@ fn move_deeply_nested_pane_down() {
     let p_h = state.pane_layout.split(SplitDirection::Horizontal);
     let p_v1 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p_v1) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     state.pane_layout.active_id = p_h;
     let p_v2 = state.pane_layout.split(SplitDirection::Vertical);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p_h) {
-        pane.content = PaneContent::Buffer(buf3_id);
+        pane.content = PaneContent::Editor(buf3_id);
     }
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p_v2) {
-        pane.content = PaneContent::Buffer(buf4_id);
+        pane.content = PaneContent::Editor(buf4_id);
     }
     state.pane_layout.active_id = p_v1;
     let result = state.pane_layout.move_direction(FocusDirection::Down);
@@ -1661,7 +1661,7 @@ fn move_pane_at_edge_is_noop() {
         .with_extra_buffer(buf2);
     let p2 = state.pane_layout.split(SplitDirection::Horizontal);
     if let Some(pane) = state.pane_layout.pane_by_id_mut(p2) {
-        pane.content = PaneContent::Buffer(buf2_id);
+        pane.content = PaneContent::Editor(buf2_id);
     }
     let before = render_to_string(60, 12, &state);
     state.pane_layout.move_direction(FocusDirection::Up);

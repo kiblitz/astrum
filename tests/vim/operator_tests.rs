@@ -4,19 +4,19 @@
 //! save cursor → apply motion → compute range → operate on range.
 
 use astrum::action::Action;
-use astrum::buffer::Buffer;
+use astrum::buffer::TextBuffer;
 use expect_test::{expect, Expect};
 use ropey::Rope;
 
-fn buf(text: &str, line: usize, col: usize) -> Buffer {
-    let mut b = Buffer::new_scratch();
+fn buf(text: &str, line: usize, col: usize) -> TextBuffer {
+    let mut b = TextBuffer::new_scratch();
     b.rope = Rope::from_str(text);
     b.cursor.line = line;
     b.cursor.col = col;
     b
 }
 
-fn state(b: &Buffer) -> String {
+fn state(b: &TextBuffer) -> String {
     let text = b.rope.to_string();
     let display = text.replace('\n', "\\n");
     format!("({},{}) \"{}\"", b.cursor.line, b.cursor.col, display)
@@ -27,7 +27,7 @@ fn check(actual: &str, expect: Expect) {
 }
 
 /// Apply a motion to the buffer (mirrors editor's apply_motion).
-fn apply_motion(b: &mut Buffer, action: &Action) {
+fn apply_motion(b: &mut TextBuffer, action: &Action) {
     match action {
         Action::MoveUp => b.move_up(),
         Action::MoveDown => b.move_down(),
@@ -49,7 +49,7 @@ fn apply_motion(b: &mut Buffer, action: &Action) {
 
 /// Compute the operator range for a motion applied `count` times.
 /// Returns (start_char_idx, end_char_idx) suitable for delete/yank/change.
-fn operator_range(b: &mut Buffer, motion: &Action, count: usize) -> (usize, usize) {
+fn operator_range(b: &mut TextBuffer, motion: &Action, count: usize) -> (usize, usize) {
     let start_line = b.cursor.line;
     let start_col = b.cursor.col;
 
@@ -98,7 +98,7 @@ fn operator_range(b: &mut Buffer, motion: &Action, count: usize) -> (usize, usiz
 }
 
 /// Simulate delete operator + motion (like d{motion}).
-fn delete_with_motion(b: &mut Buffer, motion: &Action, count: usize) -> String {
+fn delete_with_motion(b: &mut TextBuffer, motion: &Action, count: usize) -> String {
     let orig_line = b.cursor.line;
     let orig_col = b.cursor.col;
     let (start, end) = operator_range(b, motion, count);
@@ -113,7 +113,7 @@ fn delete_with_motion(b: &mut Buffer, motion: &Action, count: usize) -> String {
 }
 
 /// Simulate yank operator + motion (like y{motion}).
-fn yank_with_motion(b: &mut Buffer, motion: &Action, count: usize) -> String {
+fn yank_with_motion(b: &mut TextBuffer, motion: &Action, count: usize) -> String {
     let orig_line = b.cursor.line;
     let orig_col = b.cursor.col;
     let (start, end) = operator_range(b, motion, count);
@@ -124,7 +124,7 @@ fn yank_with_motion(b: &mut Buffer, motion: &Action, count: usize) -> String {
 }
 
 /// Simulate change operator + motion (like c{motion}).
-fn change_with_motion(b: &mut Buffer, motion: &Action, count: usize) -> String {
+fn change_with_motion(b: &mut TextBuffer, motion: &Action, count: usize) -> String {
     let orig_line = b.cursor.line;
     let orig_col = b.cursor.col;
     let (start, end) = operator_range(b, motion, count);
@@ -139,7 +139,7 @@ fn change_with_motion(b: &mut Buffer, motion: &Action, count: usize) -> String {
 }
 
 /// Simulate visual mode: select from anchor to cursor, then operate.
-fn visual_range(b: &Buffer, anchor_line: usize, anchor_col: usize) -> (usize, usize) {
+fn visual_range(b: &TextBuffer, anchor_line: usize, anchor_col: usize) -> (usize, usize) {
     let anchor = b.char_idx_at(anchor_line, anchor_col);
     let cursor = b.char_idx_at(b.cursor.line, b.cursor.col);
     let start = anchor.min(cursor);

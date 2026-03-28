@@ -1,5 +1,5 @@
 use crate::action::{Action, SearchDirection};
-use crate::buffer::Buffer;
+use crate::buffer::TextBuffer;
 use crate::config::Config;
 use crate::file_browser::{scan_directory, FileBrowser, FileBrowserResult};
 use crate::input::{InputHandler, Mode};
@@ -150,6 +150,14 @@ impl RecentPickerState {
     }
 }
 
+/// A popup overlay that floats above pane content and intercepts all input.
+/// Only one popup can be active at a time.
+pub enum Popup {
+    FindFile(FindFileState),
+    Palette(PaletteState),
+    RecentPicker(RecentPickerState),
+}
+
 /// Spacemacs-style find-file minibuffer.
 pub struct FindFileState {
     /// The directory currently being browsed.
@@ -293,7 +301,7 @@ impl SearchState {
 }
 
 pub struct Editor {
-    buffers: Vec<Buffer>,
+    buffers: Vec<TextBuffer>,
     pane_layout: PaneLayout,
     input: InputHandler,
     renderer: Renderer,
@@ -305,8 +313,7 @@ pub struct Editor {
     clipboard: Option<arboard::Clipboard>,
     /// Per-pane jump history: pane_id → (back_stack, forward_stack).
     jump_history: HashMap<usize, (Vec<JumpPosition>, Vec<JumpPosition>)>,
-    palette: Option<PaletteState>,
-    find_file: Option<FindFileState>,
+    popup: Option<Popup>,
     swap_manager: SwapManager,
     search: SearchState,
     /// Pending operator awaiting a motion: (operator_action, count).
@@ -332,8 +339,6 @@ pub struct Editor {
     config_error: Option<String>,
     /// Recently visited panes (most recent first) — files, directories, and terminals.
     recent_panes: Vec<RecentPane>,
-    /// Recent files picker overlay.
-    recent_picker: Option<RecentPickerState>,
     /// Detached terminal sessions (not assigned to any pane). Key is terminal session id.
     detached_terminals: HashMap<usize, crate::terminal::TerminalSession>,
     /// Channel for receiving terminal output from background reader threads.
@@ -492,7 +497,7 @@ fn shortest_unique_suffixes(paths: &[PathBuf]) -> Vec<String> {
     }
 }
 
-fn apply_motion(b: &mut Buffer, action: &Action, viewport_height: usize) {
+fn apply_motion(b: &mut TextBuffer, action: &Action, viewport_height: usize) {
     match action {
         Action::MoveUp => b.move_up(),
         Action::MoveDown => b.move_down(),
@@ -549,8 +554,7 @@ impl Editor {
             should_quit: false,
             clipboard: arboard::Clipboard::new().ok(),
             jump_history: HashMap::new(),
-            palette: None,
-            find_file: None,
+            popup: None,
             swap_manager,
             search: SearchState::new(),
             pending_operator: None,
@@ -564,7 +568,6 @@ impl Editor {
             comment_syntax,
             config_error: None,
             recent_panes: Vec::new(),
-            recent_picker: None,
             detached_terminals: HashMap::new(),
             terminal_rx: rx,
             terminal_tx: tx,
@@ -636,7 +639,7 @@ impl Editor {
 
     // -- Helper methods --
 
-    fn active_buffer(&self) -> Option<&Buffer> {
+    fn active_buffer(&self) -> Option<&TextBuffer> {
         let bid = self.pane_layout.active_pane().content.buffer_id()?;
         self.buffers.iter().find(|b| b.id == bid)
     }
@@ -679,7 +682,7 @@ impl Editor {
             .await?
         {
             Ok(text) => {
-                let mut buf = Buffer::from_text(&text, path_buf);
+                let mut buf = TextBuffer::from_text(&text, path_buf);
                 let buf_id = buf.id;
                 let hash = buf.content_hash();
                 if let Some(ref p) = buf.path {
@@ -692,7 +695,7 @@ impl Editor {
                 self.pane_layout.active_pane_mut().switch_buffer(buf_id);
             }
             Err(_) => {
-                let mut buf = Buffer::new_for_path(path_buf);
+                let mut buf = TextBuffer::new_for_path(path_buf);
                 let buf_id = buf.id;
                 let hash = buf.content_hash();
                 if let Some(ref p) = buf.path {
@@ -709,7 +712,7 @@ impl Editor {
     }
 
     pub fn new_scratch_buffer(&mut self) {
-        let buf = Buffer::new_scratch();
+        let buf = TextBuffer::new_scratch();
         let buf_id = buf.id;
         self.buffers.push(buf);
         self.pane_layout.active_pane_mut().switch_buffer(buf_id);
@@ -807,7 +810,7 @@ impl Editor {
             let count = stale.len();
             for recovered in stale {
                 let path = recovered.source_path.clone();
-                let mut buf = Buffer::from_text(&recovered.content, path);
+                let mut buf = TextBuffer::from_text(&recovered.content, path);
                 buf.modified = true;
                 let buf_id = buf.id;
                 let hash = buf.content_hash();
@@ -835,8 +838,7 @@ impl Editor {
                 let pending = &self.input.pending_display;
                 let pending_hints = self.input.pending_hints();
                 let hl_cache = &self.highlight_cache;
-                let palette = &self.palette;
-                let find_file = &self.find_file;
+                let popup = &self.popup;
                 let search_state = &self.search;
                 let search_buf = &self.input.search_buffer;
                 let search_dir = self.input.search_direction;
@@ -847,13 +849,12 @@ impl Editor {
                 });
                 let rec_macro = self.recording_macro.as_ref().map(|(reg, _)| *reg);
                 let config_err = self.config_error.as_deref();
-                let recent_picker = &self.recent_picker;
                 self.terminal.draw(|frame| {
                     self.renderer.render(
                         frame, buffers, pane_layout, mode, cmd_buf, status, pending,
-                        &pending_hints, hl_cache, palette,
-                        find_file, search_state, search_buf, search_dir, visual_anchor,
-                        sub_hl, rec_macro, config_err, recent_picker,
+                        &pending_hints, hl_cache, popup,
+                        search_state, search_buf, search_dir, visual_anchor,
+                        sub_hl, rec_macro, config_err,
                     );
                 })?;
             }
@@ -896,16 +897,19 @@ impl Editor {
                                     self.handle_substitute_confirm_key(key);
                                     continue;
                                 }
-                                if self.find_file.is_some() {
-                                    self.handle_find_file_key(key).await?;
-                                    continue;
-                                }
-                                if self.recent_picker.is_some() {
-                                    self.handle_recent_picker_key(key).await?;
-                                    continue;
-                                }
-                                if self.palette.is_some() {
-                                    self.handle_palette_key(key).await?;
+                                if self.popup.is_some() {
+                                    match self.popup {
+                                        Some(Popup::FindFile(_)) => {
+                                            self.handle_find_file_key(key).await?;
+                                        }
+                                        Some(Popup::RecentPicker(_)) => {
+                                            self.handle_recent_picker_key(key).await?;
+                                        }
+                                        Some(Popup::Palette(_)) => {
+                                            self.handle_palette_key(key).await?;
+                                        }
+                                        None => unreachable!(),
+                                    }
                                     continue;
                                 }
 
@@ -955,9 +959,7 @@ impl Editor {
                             Event::Mouse(mouse) => {
                                 // Suppress mouse events when any overlay is open.
                                 let has_overlay = self.substitute_confirm.is_some()
-                                    || self.find_file.is_some()
-                                    || self.recent_picker.is_some()
-                                    || self.palette.is_some();
+                                    || self.popup.is_some();
                                 if !has_overlay {
                                     if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
                                         self.handle_mouse_click(mouse.column, mouse.row).await?;
@@ -1415,9 +1417,9 @@ impl Editor {
 
             // Buffer management
             Action::OpenRecentPicker => {
-                if self.recent_picker.is_none() {
+                if !matches!(self.popup, Some(Popup::RecentPicker(_))) {
                     let items = self.build_recent_items();
-                    self.recent_picker = Some(RecentPickerState::new(items));
+                    self.popup = Some(Popup::RecentPicker(RecentPickerState::new(items)));
                     execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
             }
@@ -1483,7 +1485,7 @@ impl Editor {
 
             // File browser
             Action::OpenFileBrowser => {
-                if self.find_file.is_none() {
+                if !matches!(self.popup, Some(Popup::FindFile(_))) {
                     let dir = if let Some(fb) = self.pane_layout.active_pane().content.as_browser() {
                         // Start at the file browser's current directory.
                         fb.current_dir.clone()
@@ -1495,16 +1497,16 @@ impl Editor {
                     } else {
                         std::env::current_dir().unwrap_or_default()
                     };
-                    self.find_file = Some(FindFileState::new(dir));
+                    self.popup = Some(Popup::FindFile(FindFileState::new(dir)));
                     execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
             }
             Action::OpenFileBrowserHome => {
-                if self.find_file.is_none() {
+                if !matches!(self.popup, Some(Popup::FindFile(_))) {
                     let dir = dirs::home_dir().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_default()
                     });
-                    self.find_file = Some(FindFileState::new(dir));
+                    self.popup = Some(Popup::FindFile(FindFileState::new(dir)));
                     execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
                 }
             }
@@ -1860,7 +1862,7 @@ impl Editor {
                     self.recent_panes.retain(|r| !matches!(r, RecentPane::Path(p) if p == &clean));
                 }
             }
-            PaneContent::Buffer(buf_id) => {
+            PaneContent::Editor(buf_id) => {
                 let buf_id = *buf_id;
                 if let Some(buf_idx) = self.buffers.iter().position(|b| b.id == buf_id) {
                     if self.buffers[buf_idx].modified {
@@ -1879,7 +1881,7 @@ impl Editor {
                         self.highlight_engine.remove_buffer(removed_id);
                         self.swap_manager.unregister(removed_id);
                         for pane in &mut self.pane_layout.panes {
-                            if let PaneContent::Buffer(bid) = pane.content {
+                            if let PaneContent::Editor(bid) = pane.content {
                                 if bid == removed_id {
                                     pane.content = PaneContent::Welcome;
                                 }
@@ -2073,7 +2075,7 @@ impl Editor {
             })
             .collect();
 
-        self.palette = Some(PaletteState::new(items));
+        self.popup = Some(Popup::Palette(PaletteState::new(items)));
         // Clear any pending key chain state.
         self.input.clear_pending();
     }
@@ -2088,40 +2090,41 @@ impl Editor {
 
         match key.code {
             KeyCode::Esc => {
-                self.palette = None;
+                self.popup = None;
             }
             KeyCode::Enter => {
-                if let Some(ref palette) = self.palette {
-                    if let Some(action) = palette.selected_action() {
-                        self.palette = None;
-                        self.execute_action(action).await?;
-                    } else {
-                        self.palette = None;
-                    }
+                let action = if let Some(Popup::Palette(ref p)) = self.popup {
+                    p.selected_action()
+                } else {
+                    None
+                };
+                self.popup = None;
+                if let Some(action) = action {
+                    self.execute_action(action).await?;
                 }
             }
             KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
-                if let Some(ref mut palette) = self.palette {
-                    palette.selected = palette.selected.saturating_sub(1);
+                if let Some(Popup::Palette(ref mut p)) = self.popup {
+                    p.selected = p.selected.saturating_sub(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
-                if let Some(ref mut palette) = self.palette {
-                    if palette.selected + 1 < palette.filtered.len() {
-                        palette.selected += 1;
+                if let Some(Popup::Palette(ref mut p)) = self.popup {
+                    if p.selected + 1 < p.filtered.len() {
+                        p.selected += 1;
                     }
                 }
             }
             KeyCode::Backspace => {
-                if let Some(ref mut palette) = self.palette {
-                    palette.query.pop();
-                    palette.refilter();
+                if let Some(Popup::Palette(ref mut p)) = self.popup {
+                    p.query.pop();
+                    p.refilter();
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(ref mut palette) = self.palette {
-                    palette.query.push(c);
-                    palette.refilter();
+                if let Some(Popup::Palette(ref mut p)) = self.popup {
+                    p.query.push(c);
+                    p.refilter();
                 }
             }
             _ => {}
@@ -2139,15 +2142,17 @@ impl Editor {
 
         match key.code {
             KeyCode::Esc => {
-                self.recent_picker = None;
+                self.popup = None;
                 execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
             }
             KeyCode::Enter => {
-                let selected = self.recent_picker.as_ref()
-                    .and_then(|rp| rp.selected_item())
-                    .map(|item| item.kind.clone());
+                let selected = if let Some(Popup::RecentPicker(ref rp)) = self.popup {
+                    rp.selected_item().map(|item| item.kind.clone())
+                } else {
+                    None
+                };
 
-                self.recent_picker = None;
+                self.popup = None;
                 execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
 
                 if let Some(kind) = selected {
@@ -2166,25 +2171,25 @@ impl Editor {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
-                if let Some(ref mut rp) = self.recent_picker {
+                if let Some(Popup::RecentPicker(ref mut rp)) = self.popup {
                     rp.selected = rp.selected.saturating_sub(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
-                if let Some(ref mut rp) = self.recent_picker {
+                if let Some(Popup::RecentPicker(ref mut rp)) = self.popup {
                     if rp.selected + 1 < rp.filtered.len() {
                         rp.selected += 1;
                     }
                 }
             }
             KeyCode::Backspace => {
-                if let Some(ref mut rp) = self.recent_picker {
+                if let Some(Popup::RecentPicker(ref mut rp)) = self.popup {
                     rp.query.pop();
                     rp.refilter();
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(ref mut rp) = self.recent_picker {
+                if let Some(Popup::RecentPicker(ref mut rp)) = self.popup {
                     rp.query.push(c);
                     rp.refilter();
                 }
@@ -2207,41 +2212,43 @@ impl Editor {
                 self.close_find_file()?;
             }
             KeyCode::Enter => {
-                if let Some(mut ff) = self.find_file.take() {
-                    if ff.path_selected && !ff.input.is_empty() {
-                        // Path line selected — create the file.
-                        let new_path = ff.dir.join(&ff.input);
-                        if new_path.exists() {
-                            self.status_message = format!("\"{}\" already exists", ff.input);
-                            self.find_file = Some(ff);
-                        } else {
-                            // Record jump BEFORE opening file so history captures browser state.
-                            self.push_jump();
-                            let path_str = new_path.to_string_lossy().to_string();
-                            self.open_file(&path_str).await?;
-                            self.input.mode = Mode::Insert;
-                        }
-                    } else if ff.is_dot_selected() {
-                        // "." → open tree browser at current directory.
-                        let dir = ff.dir.clone();
+                // Take the FindFile state out of the popup to avoid borrow issues.
+                let mut ff = match self.popup.take() {
+                    Some(Popup::FindFile(ff)) => ff,
+                    other => { self.popup = other; return Ok(()); }
+                };
+                if ff.path_selected && !ff.input.is_empty() {
+                    // Path line selected — create the file.
+                    let new_path = ff.dir.join(&ff.input);
+                    if new_path.exists() {
+                        self.status_message = format!("\"{}\" already exists", ff.input);
+                        self.popup = Some(Popup::FindFile(ff));
+                    } else {
+                        // Record jump BEFORE opening file so history captures browser state.
                         self.push_jump();
-                        self.open_file_browser(dir).await?;
-                    } else if let Some(entry) = ff.selected_entry().cloned() {
-                        if entry.is_dir {
-                            ff.enter_dir(&entry.path);
-                            self.find_file = Some(ff);
-                        } else {
-                            // Record jump BEFORE opening file so history captures browser state.
-                            self.push_jump();
-                            let path_str = entry.path.to_string_lossy().to_string();
-                            self.open_file(&path_str).await?;
-                        }
+                        let path_str = new_path.to_string_lossy().to_string();
+                        self.open_file(&path_str).await?;
+                        self.input.mode = Mode::Insert;
+                    }
+                } else if ff.is_dot_selected() {
+                    // "." → open tree browser at current directory.
+                    let dir = ff.dir.clone();
+                    self.push_jump();
+                    self.open_file_browser(dir).await?;
+                } else if let Some(entry) = ff.selected_entry().cloned() {
+                    if entry.is_dir {
+                        ff.enter_dir(&entry.path);
+                        self.popup = Some(Popup::FindFile(ff));
+                    } else {
+                        // Record jump BEFORE opening file so history captures browser state.
+                        self.push_jump();
+                        let path_str = entry.path.to_string_lossy().to_string();
+                        self.open_file(&path_str).await?;
                     }
                 }
             }
             KeyCode::Tab => {
-                // Tab completes to the selected entry.
-                if let Some(ref mut ff) = self.find_file {
+                if let Some(Popup::FindFile(ref mut ff)) = self.popup {
                     if let Some(entry) = ff.selected_entry().cloned() {
                         if entry.is_dir {
                             ff.enter_dir(&entry.path);
@@ -2253,9 +2260,8 @@ impl Editor {
                 }
             }
             KeyCode::Backspace => {
-                if let Some(ref mut ff) = self.find_file {
+                if let Some(Popup::FindFile(ref mut ff)) = self.popup {
                     if ff.input.is_empty() {
-                        // Go up a directory.
                         if let Some(parent) = ff.dir.parent().map(|p| p.to_path_buf()) {
                             ff.enter_dir(&parent);
                         }
@@ -2266,11 +2272,10 @@ impl Editor {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
-                if let Some(ref mut ff) = self.find_file {
+                if let Some(Popup::FindFile(ref mut ff)) = self.popup {
                     if ff.path_selected {
                         // Already at top (path line) — do nothing.
                     } else if ff.selected == 0 {
-                        // Move from first entry up to the path line.
                         ff.path_selected = true;
                     } else {
                         ff.selected = ff.selected.saturating_sub(1);
@@ -2278,9 +2283,8 @@ impl Editor {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
-                if let Some(ref mut ff) = self.find_file {
+                if let Some(Popup::FindFile(ref mut ff)) = self.popup {
                     if ff.path_selected {
-                        // Move from path line back to first entry (if any).
                         if !ff.filtered.is_empty() {
                             ff.path_selected = false;
                             ff.selected = 0;
@@ -2291,7 +2295,7 @@ impl Editor {
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(ref mut ff) = self.find_file {
+                if let Some(Popup::FindFile(ref mut ff)) = self.popup {
                     if c == '/' || c == '\\' {
                         if let Some(entry) = ff.selected_entry().cloned() {
                             if entry.is_dir {
@@ -2307,21 +2311,21 @@ impl Editor {
             _ => {}
         }
         // Disable mouse capture when find-file closes.
-        if self.find_file.is_none() {
+        if !matches!(self.popup, Some(Popup::FindFile(_))) {
             execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
         }
         Ok(())
     }
 
     fn close_find_file(&mut self) -> Result<()> {
-        self.find_file = None;
+        self.popup = None;
         execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
         Ok(())
     }
 
     async fn handle_mouse_click(&mut self, col: u16, row: u16) -> Result<()> {
         // Only handle clicks on find-file overlay for now.
-        if let Some(ref mut ff) = self.find_file {
+        if let Some(Popup::FindFile(ref mut ff)) = self.popup {
             let size = self.terminal.size()?;
             // Replicate the popup geometry from render_find_file.
             let width = (size.width * 3 / 5).max(40).min(size.width.saturating_sub(4));
@@ -2356,8 +2360,11 @@ impl Editor {
                 let clicked_index = scroll_offset + (row - list_y) as usize;
                 if clicked_index < ff.filtered.len() {
                     ff.selected = clicked_index;
-                    // Simulate Enter on the clicked entry.
-                    let ff = self.find_file.take().unwrap();
+                    // Simulate Enter on the clicked entry — take FindFile out.
+                    let ff = match self.popup.take() {
+                        Some(Popup::FindFile(ff)) => ff,
+                        _ => unreachable!(),
+                    };
                     if ff.is_dot_selected() {
                         let dir = ff.dir.clone();
                         self.push_jump();
@@ -2366,7 +2373,7 @@ impl Editor {
                         if entry.is_dir {
                             let mut ff = ff;
                             ff.enter_dir(&entry.path);
-                            self.find_file = Some(ff);
+                            self.popup = Some(Popup::FindFile(ff));
                         } else {
                             self.push_jump();
                             let path_str = entry.path.to_string_lossy().to_string();
@@ -2376,7 +2383,7 @@ impl Editor {
                 }
             }
         }
-        if self.find_file.is_none() {
+        if !matches!(self.popup, Some(Popup::FindFile(_))) {
             execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
         }
         Ok(())
@@ -2386,7 +2393,7 @@ impl Editor {
     /// the closure returns, or None if no active buffer exists.
     fn sync_buffer<F, R>(&mut self, f: F) -> Option<R>
     where
-        F: FnOnce(&mut Buffer) -> R,
+        F: FnOnce(&mut TextBuffer) -> R,
     {
         let Self { buffers, pane_layout, .. } = self;
         let pane = pane_layout.active_pane_mut();
@@ -2402,7 +2409,7 @@ impl Editor {
 
     fn with_buffer<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut Buffer),
+        F: FnOnce(&mut TextBuffer),
     {
         self.sync_buffer(f);
     }
@@ -2435,7 +2442,7 @@ impl Editor {
     /// incremental tree-sitter parse and update the highlight cache.
     fn with_buffer_edit<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut Buffer) -> Option<EditInfo>,
+        F: FnOnce(&mut TextBuffer) -> Option<EditInfo>,
     {
         let Self { buffers, pane_layout, highlight_engine, highlight_cache, .. } = self;
         let pane = pane_layout.active_pane_mut();
@@ -2601,7 +2608,7 @@ impl Editor {
                 selected: fb.selected,
                 scroll_offset: fb.scroll_offset,
             }),
-            PaneContent::Buffer(buf_id) => Some(JumpPosition::Buffer {
+            PaneContent::Editor(buf_id) => Some(JumpPosition::Buffer {
                 buffer_id: *buf_id,
                 line: pane.cursor.line,
                 col: pane.cursor.col,

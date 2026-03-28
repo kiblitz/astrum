@@ -22,7 +22,7 @@ impl Default for Cursor {
 }
 
 #[derive(Debug)]
-pub struct Buffer {
+pub struct TextBuffer {
     pub id: usize,
     pub rope: Rope,
     pub cursor: Cursor,
@@ -43,7 +43,7 @@ struct UndoEntry {
     cursor: Cursor,
 }
 
-impl Buffer {
+impl TextBuffer {
     pub fn new_scratch() -> Self {
         Self {
             id: next_id(),

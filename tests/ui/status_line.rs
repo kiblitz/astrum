@@ -1,5 +1,5 @@
 use super::helpers::*;
-use astrum::buffer::Buffer;
+use astrum::buffer::TextBuffer;
 use astrum::input::Mode;
 use expect_test::expect;
 
@@ -206,7 +206,7 @@ fn status_modified_file() {
 
 #[test]
 fn status_scratch_buffer() {
-    let buf = Buffer::new_scratch();
+    let buf = TextBuffer::new_scratch();
     let state = RenderState::default().with_buffer(buf);
     let actual = render_to_string(80, 24, &state);
     check(&actual, expect![[r#"
