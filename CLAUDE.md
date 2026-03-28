@@ -207,12 +207,14 @@ Operator ranges respect vim's exclusive/inclusive semantics (`is_exclusive_motio
 ### Jump history
 Per-pane jump history with back/forward stacks.
 
-- `jump_history: HashMap<usize, (Vec<JumpPosition>, Vec<JumpPosition>)>` — keyed by pane ID
-- `JumpPosition` is either `Buffer { buffer_id, line, col }` or `Browser { dir, selected, scroll_offset }`
+- `jump_history: HashMap<usize, (Vec<PaneContentSnapshot>, Vec<PaneContentSnapshot>)>` — keyed by pane ID
+- `PaneContentSnapshot` (in pane.rs) is a lightweight snapshot enum with one variant per `PaneContent` type — every content type is automatically navigable via jump history
+- `PaneContent::snapshot(&cursor)` produces a snapshot; `restore_jump()` in editor.rs restores from one
 - History is **copied** when splitting a pane (user decision)
 - History is removed when a pane is closed
-- `push_jump()` records current position before navigation events (opening files, switching buffers, opening browser)
-- `jump_back`/`jump_forward` only push current position to opposite stack if destination exists (prevents stack growth at end)
+- `push_jump()` records current position before navigation events (opening files, switching buffers, opening browser, opening workspace/git views)
+- `jump_back`/`jump_forward` always push current position to opposite stack (all content types are snapshotable)
+- **When adding a new PaneContent variant**, add a corresponding `PaneContentSnapshot` variant and handle it in `snapshot()` and `restore_jump()` — the compiler enforces exhaustive matches
 
 ### Macros
 Vim-style macro recording and playback.

@@ -4,6 +4,7 @@ use crate::terminal::TerminalSession;
 use crate::workspace::{GitRepo, GitStatus, Workspace};
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_PANE_ID: AtomicUsize = AtomicUsize::new(1);
@@ -112,6 +113,35 @@ impl PaneContent {
         matches!(self, PaneContent::Terminal(_))
     }
 
+    /// Capture the minimum state needed to restore this content on a pane.
+    /// Used by jump history so every content type is navigable.
+    pub fn snapshot(&self, cursor: &Cursor) -> PaneContentSnapshot {
+        match self {
+            PaneContent::Welcome => PaneContentSnapshot::Welcome,
+            PaneContent::Editor(buf_id) => PaneContentSnapshot::Editor {
+                buffer_id: *buf_id,
+                line: cursor.line,
+                col: cursor.col,
+            },
+            PaneContent::FileBrowser(fb) => PaneContentSnapshot::FileBrowser {
+                dir: fb.current_dir.clone(),
+                selected: fb.selected,
+                scroll_offset: fb.scroll_offset,
+            },
+            PaneContent::Terminal(term) => PaneContentSnapshot::Terminal { term_id: term.id },
+            PaneContent::Workspace(ws) => PaneContentSnapshot::Workspace {
+                selected: ws.selected,
+            },
+            PaneContent::GitRepo(gr) => PaneContentSnapshot::GitRepo {
+                repo_path: gr.repo_path.clone(),
+            },
+            PaneContent::GitStatus(gs) => PaneContentSnapshot::GitStatus {
+                repo_path: gs.repo_path.clone(),
+                selected: gs.selected,
+            },
+        }
+    }
+
     /// Check if another PaneContent refers to the same logical content.
     pub fn same_identity(&self, other: &PaneContent) -> bool {
         match (self, other) {
@@ -124,6 +154,20 @@ impl PaneContent {
             _ => false,
         }
     }
+}
+
+/// Lightweight snapshot of pane content for jump history.
+/// Every PaneContent variant has a corresponding snapshot so jump history
+/// works uniformly for all content types.
+#[derive(Debug, Clone)]
+pub enum PaneContentSnapshot {
+    Welcome,
+    Editor { buffer_id: usize, line: usize, col: usize },
+    FileBrowser { dir: PathBuf, selected: usize, scroll_offset: usize },
+    Terminal { term_id: usize },
+    Workspace { selected: usize },
+    GitRepo { repo_path: PathBuf },
+    GitStatus { repo_path: PathBuf, selected: usize },
 }
 
 #[derive(Debug)]

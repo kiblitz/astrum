@@ -255,24 +255,9 @@ impl FindFileState {
     }
 }
 
-/// A position in the jump history.
-#[derive(Debug, Clone)]
-enum JumpPosition {
-    /// Cursor position in a buffer.
-    Buffer {
-        buffer_id: usize,
-        line: usize,
-        col: usize,
-    },
-    /// File browser open on a directory.
-    Browser {
-        dir: PathBuf,
-        selected: usize,
-        scroll_offset: usize,
-    },
-    /// Terminal was open on this pane. Stores the terminal session ID for reattachment.
-    Terminal { term_id: usize },
-}
+// Jump history uses PaneContentSnapshot from pane.rs — every content type
+// is automatically supported without per-type special casing here.
+use crate::pane::PaneContentSnapshot;
 
 /// Per-buffer search matches.
 pub struct BufferSearchMatches {
@@ -314,7 +299,7 @@ pub struct Editor {
     should_quit: bool,
     clipboard: Option<arboard::Clipboard>,
     /// Per-pane jump history: pane_id → (back_stack, forward_stack).
-    jump_history: HashMap<usize, (Vec<JumpPosition>, Vec<JumpPosition>)>,
+    jump_history: HashMap<usize, (Vec<PaneContentSnapshot>, Vec<PaneContentSnapshot>)>,
     popup: Option<Popup>,
     swap_manager: SwapManager,
     search: SearchState,
@@ -2041,23 +2026,17 @@ impl Editor {
             let pane_id = self.pane_layout.active_id;
             let stacks = self.jump_history.entry(pane_id).or_insert_with(|| (Vec::new(), Vec::new()));
             while let Some(pos) = stacks.0.pop() {
-                match &pos {
-                    JumpPosition::Buffer { buffer_id, .. } => {
-                        if *buffer_id != removed_id
-                            && self.buffers.iter().any(|b| b.id == *buffer_id)
-                        {
-                            self.restore_jump(pos);
-                            restored = true;
-                            break;
-                        }
-                        // else: stale entry, continue searching
-                    }
-                    JumpPosition::Browser { .. } | JumpPosition::Terminal { .. } => {
-                        self.restore_jump(pos);
-                        restored = true;
-                        break;
+                // Skip Editor snapshots for the removed buffer; accept everything else.
+                if let PaneContentSnapshot::Editor { buffer_id, .. } = &pos {
+                    if *buffer_id == removed_id
+                        || !self.buffers.iter().any(|b| b.id == *buffer_id)
+                    {
+                        continue; // stale entry
                     }
                 }
+                self.restore_jump(pos);
+                restored = true;
+                break;
             }
             if !restored {
                 if !self.buffers.is_empty() {
@@ -2908,29 +2887,13 @@ impl Editor {
         }
     }
 
-    fn current_jump_position(&self) -> Option<JumpPosition> {
+    fn current_jump_position(&self) -> PaneContentSnapshot {
         let pane = self.pane_layout.active_pane();
-        match &pane.content {
-            PaneContent::Terminal(term) => Some(JumpPosition::Terminal { term_id: term.id }),
-            PaneContent::FileBrowser(fb) => Some(JumpPosition::Browser {
-                dir: fb.current_dir.clone(),
-                selected: fb.selected,
-                scroll_offset: fb.scroll_offset,
-            }),
-            PaneContent::Editor(buf_id) => Some(JumpPosition::Buffer {
-                buffer_id: *buf_id,
-                line: pane.cursor.line,
-                col: pane.cursor.col,
-            }),
-            PaneContent::Welcome
-            | PaneContent::Workspace(_)
-            | PaneContent::GitRepo(_)
-            | PaneContent::GitStatus(_) => None,
-        }
+        pane.content.snapshot(&pane.cursor)
     }
 
     /// Get the (back, forward) jump stacks for the active pane.
-    fn jump_stacks_mut(&mut self) -> &mut (Vec<JumpPosition>, Vec<JumpPosition>) {
+    fn jump_stacks_mut(&mut self) -> &mut (Vec<PaneContentSnapshot>, Vec<PaneContentSnapshot>) {
         let pane_id = self.pane_layout.active_id;
         self.jump_history.entry(pane_id).or_insert_with(|| (Vec::new(), Vec::new()))
     }
@@ -2938,7 +2901,7 @@ impl Editor {
     /// Push a specific browser directory as a jump position.
     fn push_browser_jump(&mut self, dir: PathBuf, selected: usize, scroll_offset: usize) {
         let stacks = self.jump_stacks_mut();
-        stacks.0.push(JumpPosition::Browser { dir, selected, scroll_offset });
+        stacks.0.push(PaneContentSnapshot::FileBrowser { dir, selected, scroll_offset });
         stacks.1.clear();
         if stacks.0.len() > 100 {
             stacks.0.remove(0);
@@ -2947,13 +2910,12 @@ impl Editor {
 
     /// Record the current position in the jump-back stack.
     fn push_jump(&mut self) {
-        if let Some(pos) = self.current_jump_position() {
-            let stacks = self.jump_stacks_mut();
-            stacks.0.push(pos);
-            stacks.1.clear();
-            if stacks.0.len() > 100 {
-                stacks.0.remove(0);
-            }
+        let pos = self.current_jump_position();
+        let stacks = self.jump_stacks_mut();
+        stacks.0.push(pos);
+        stacks.1.clear();
+        if stacks.0.len() > 100 {
+            stacks.0.remove(0);
         }
     }
 
@@ -2961,9 +2923,7 @@ impl Editor {
         let current = self.current_jump_position();
         let stacks = self.jump_stacks_mut();
         if let Some(pos) = stacks.0.pop() {
-            if let Some(cur) = current {
-                stacks.1.push(cur);
-            }
+            stacks.1.push(current);
             self.restore_jump(pos);
         } else {
             self.status_message = "No older jump position".into();
@@ -2974,18 +2934,19 @@ impl Editor {
         let current = self.current_jump_position();
         let stacks = self.jump_stacks_mut();
         if let Some(pos) = stacks.1.pop() {
-            if let Some(cur) = current {
-                stacks.0.push(cur);
-            }
+            stacks.0.push(current);
             self.restore_jump(pos);
         } else {
             self.status_message = "No newer jump position".into();
         }
     }
 
-    fn restore_jump(&mut self, pos: JumpPosition) {
+    fn restore_jump(&mut self, pos: PaneContentSnapshot) {
         match pos {
-            JumpPosition::Buffer { buffer_id, line, col } => {
+            PaneContentSnapshot::Welcome => {
+                self.pane_layout.active_pane_mut().content = PaneContent::Welcome;
+            }
+            PaneContentSnapshot::Editor { buffer_id, line, col } => {
                 if self.buffers.iter().any(|b| b.id == buffer_id) {
                     let pane = self.pane_layout.active_pane_mut();
                     pane.switch_buffer(buffer_id);
@@ -3002,7 +2963,7 @@ impl Editor {
                     self.status_message = "Buffer no longer exists".into();
                 }
             }
-            JumpPosition::Browser { dir, selected, scroll_offset } => {
+            PaneContentSnapshot::FileBrowser { dir, selected, scroll_offset } => {
                 let mut fb = crate::file_browser::FileBrowser::new(dir.clone());
                 let entries = crate::file_browser::scan_directory(&dir);
                 fb.set_entries(entries);
@@ -3011,8 +2972,34 @@ impl Editor {
                 fb.scroll_offset = scroll_offset;
                 self.pane_layout.active_pane_mut().content = PaneContent::FileBrowser(fb);
             }
-            JumpPosition::Terminal { term_id } => {
+            PaneContentSnapshot::Terminal { term_id } => {
                 let _ = self.reattach_terminal(term_id);
+            }
+            PaneContentSnapshot::Workspace { selected } => {
+                match workspace::Workspace::open() {
+                    Ok(mut ws) => {
+                        ws.selected = selected.min(ws.repos.len().saturating_sub(1));
+                        self.pane_layout.active_pane_mut().content = PaneContent::Workspace(ws);
+                    }
+                    Err(e) => self.status_message = format!("Failed to open workspace: {e}"),
+                }
+            }
+            PaneContentSnapshot::GitRepo { repo_path } => {
+                match workspace::GitRepo::open(repo_path) {
+                    Ok(gr) => {
+                        self.pane_layout.active_pane_mut().content = PaneContent::GitRepo(gr);
+                    }
+                    Err(e) => self.status_message = format!("Failed to open git repo: {e}"),
+                }
+            }
+            PaneContentSnapshot::GitStatus { repo_path, selected } => {
+                match workspace::GitStatus::open(repo_path) {
+                    Ok(mut gs) => {
+                        gs.selected = selected.min(gs.files.len().saturating_sub(1));
+                        self.pane_layout.active_pane_mut().content = PaneContent::GitStatus(gs);
+                    }
+                    Err(e) => self.status_message = format!("Failed to open git status: {e}"),
+                }
             }
         }
     }
