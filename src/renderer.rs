@@ -1,6 +1,7 @@
 use crate::action::SearchDirection;
 use crate::buffer::{TextBuffer, Cursor};
 use crate::editor::{FindFileState, PaletteState, Popup, RecentPickerState, SearchState};
+use crate::workspace::CloneRepoState;
 use crate::file_browser::{format_size, BrowserInputMode, FileBrowser};
 use crate::input::Mode;
 use crate::pane::{LayoutNode, PaneContent, PaneLayout, SplitDirection};
@@ -78,7 +79,7 @@ impl Renderer {
         let active_content = &pane_layout.active_pane().content;
         let active_fb = active_content.as_browser();
         let has_content = !buffers.is_empty() || !pane_layout.is_single()
-            || pane_layout.panes.iter().any(|p| p.content.is_terminal());
+            || pane_layout.panes.iter().any(|p| !matches!(p.content, PaneContent::Welcome));
         if has_content {
             let show_cursor = !has_overlay;
             self.render_panes(frame, chunks[1], &pane_layout.root, pane_layout, buffers, highlight_cache, show_cursor, search_state, mode, visual_anchor, substitute_highlight, config_error);
@@ -97,6 +98,16 @@ impl Renderer {
                     } else {
                         self.render_welcome_status(frame, chunks[2]);
                     }
+                }
+                PaneContent::Workspace(_) => {
+                    self.render_simple_status(frame, chunks[2], "WORKSPACE", Color::Magenta);
+                }
+                PaneContent::GitRepo(gr) => {
+                    self.render_simple_status(frame, chunks[2], &format!("GIT REPO   {}", gr.name), Color::Green);
+                }
+                PaneContent::GitStatus(gs) => {
+                    let count = gs.files.len();
+                    self.render_simple_status(frame, chunks[2], &format!("GIT STATUS   {} file(s)", count), Color::Yellow);
                 }
                 PaneContent::Welcome => {
                     self.render_welcome_status(frame, chunks[2]);
@@ -130,6 +141,7 @@ impl Renderer {
             Some(Popup::FindFile(ff)) => self.render_find_file(frame, size, ff),
             Some(Popup::Palette(palette)) => self.render_palette(frame, size, palette),
             Some(Popup::RecentPicker(rp)) => self.render_recent_picker(frame, size, rp),
+            Some(Popup::CloneRepo(cr)) => self.render_clone_repo(frame, size, cr),
             None => {}
         }
 
@@ -223,6 +235,15 @@ impl Renderer {
                                 self.render_welcome(frame, content_area, config_error);
                             }
                         }
+                        PaneContent::Workspace(ws) => {
+                            self.render_workspace(frame, content_area, ws);
+                        }
+                        PaneContent::GitRepo(gr) => {
+                            self.render_git_repo(frame, content_area, gr);
+                        }
+                        PaneContent::GitStatus(gs) => {
+                            self.render_git_status(frame, content_area, gs);
+                        }
                         PaneContent::Welcome => {
                             self.render_welcome(frame, content_area, config_error);
                         }
@@ -238,9 +259,11 @@ impl Renderer {
                                     .unwrap_or("[No File]")
                             }
                             PaneContent::FileBrowser(fb) => {
-                                // Show directory name for browser panes
                                 fb.current_dir.to_str().unwrap_or("[Browser]")
                             }
+                            PaneContent::Workspace(_) => "[Workspace]",
+                            PaneContent::GitRepo(gr) => gr.name.as_str(),
+                            PaneContent::GitStatus(gs) => gs.repo_path.to_str().unwrap_or("[Git Status]"),
                             PaneContent::Welcome => "[No File]",
                         };
                         let style = if is_active {
@@ -1315,6 +1338,210 @@ impl Renderer {
                 "  No recent panes",
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
             )));
+        }
+
+        frame.render_widget(Paragraph::new(lines), list_area);
+    }
+
+    // ------------------------------------------------------------------
+    // Workspace / Git pane rendering
+    // ------------------------------------------------------------------
+
+    fn render_workspace(&self, frame: &mut Frame, area: Rect, ws: &crate::workspace::Workspace) {
+        let header_line = Line::from(vec![
+            Span::styled(" Workspace ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {} repos", ws.repos.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        let mut lines = vec![header_line, Line::from("")];
+
+        if ws.repos.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  No repos cloned yet. Use SPC u SPC a f s to clone from GitHub.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            let visible_start = ws.scroll_offset;
+            let visible_count = (area.height as usize).saturating_sub(3); // header + blank + bottom
+            for (i, repo) in ws.repos.iter().enumerate().skip(visible_start).take(visible_count) {
+                let is_selected = i == ws.selected;
+                let style = if is_selected {
+                    Style::default().fg(Color::White).bg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let prefix = if is_selected { " > " } else { "   " };
+                let name = format!("{}{}", prefix, repo.name);
+                let padded = format!("{:width$}", name, width = area.width as usize);
+                lines.push(Line::from(Span::styled(padded, style)));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn render_git_repo(&self, frame: &mut Frame, area: Rect, gr: &crate::workspace::GitRepo) {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!(" {} ", gr.name),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Branch: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&gr.branch, Style::default().fg(Color::Cyan)),
+            ]),
+        ];
+        if let Some(ref url) = gr.remote_url {
+            lines.push(Line::from(vec![
+                Span::styled("  Remote: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(url.as_str(), Style::default().fg(Color::White)),
+            ]));
+        }
+        let path_display = gr.repo_path.to_string_lossy().to_string();
+        lines.push(Line::from(vec![
+            Span::styled("  Path:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                path_display,
+                Style::default().fg(Color::White),
+            ),
+        ]));
+
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn render_git_status(&self, frame: &mut Frame, area: Rect, gs: &crate::workspace::GitStatus) {
+        let header_line = Line::from(vec![
+            Span::styled(" Git Status ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {} file(s)", gs.files.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        let mut lines = vec![header_line, Line::from("")];
+
+        if gs.files.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  Working tree clean",
+                Style::default().fg(Color::Green),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  !c to stage all files",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+
+            let visible_start = gs.scroll_offset;
+            let visible_count = (area.height as usize).saturating_sub(5);
+            for (i, file) in gs.files.iter().enumerate().skip(visible_start).take(visible_count) {
+                let is_selected = i == gs.selected;
+                let status_color = match file.status.trim() {
+                    "M" | " M" | "MM" => Color::Yellow,
+                    "A" | " A" => Color::Green,
+                    "D" | " D" => Color::Red,
+                    "??" => Color::DarkGray,
+                    _ => Color::White,
+                };
+                let bg = if is_selected { Color::DarkGray } else { Color::Reset };
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", file.status),
+                        Style::default().fg(status_color).bg(bg),
+                    ),
+                    Span::styled(
+                        format!("{:width$}", file.path, width = (area.width as usize).saturating_sub(6)),
+                        Style::default().fg(Color::White).bg(bg),
+                    ),
+                ]);
+                lines.push(line);
+            }
+        }
+
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn render_simple_status(&self, frame: &mut Frame, area: Rect, label: &str, color: Color) {
+        let mode_span = Span::styled(
+            format!(" {} ", label),
+            Style::default().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD),
+        );
+        let pad = " ".repeat((area.width as usize).saturating_sub(label.len() + 2));
+        let line = Line::from(vec![
+            mode_span,
+            Span::styled(pad, Style::default().bg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_clone_repo(&self, frame: &mut Frame, size: Rect, cr: &CloneRepoState) {
+        let width = (size.width * 3 / 5).max(40).min(size.width.saturating_sub(4));
+        let max_height = (size.height * 7 / 10).max(10).min(size.height.saturating_sub(2));
+        let x = (size.width.saturating_sub(width)) / 2;
+        let y = (size.height.saturating_sub(max_height)) / 2;
+        let popup_area = Rect::new(x, y, width, max_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .title(" Clone from GitHub ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta));
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        if inner.height < 2 || inner.width < 4 {
+            return;
+        }
+
+        // Input line
+        let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+        let input_line = Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::Cyan)),
+            Span::raw(&cr.query),
+        ]);
+        frame.render_widget(Paragraph::new(input_line), input_area);
+
+        // Status line (loading indicator or hint)
+        let status_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+        let status = if let Some(ref user) = cr.loading {
+            Span::styled(format!("Loading repos for {}...", user), Style::default().fg(Color::Yellow))
+        } else if let Some(ref err) = cr.error {
+            Span::styled(err.as_str(), Style::default().fg(Color::Red))
+        } else {
+            Span::styled(
+                "Type user/ to load repos (e.g. kiblitz/)",
+                Style::default().fg(Color::DarkGray),
+            )
+        };
+        frame.render_widget(Paragraph::new(Line::from(status)), status_area);
+
+        // List area
+        if inner.height <= 2 {
+            return;
+        }
+        let list_area = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
+        let visible_count = list_area.height as usize;
+        let scroll_offset = if cr.selected >= visible_count {
+            cr.selected - visible_count + 1
+        } else {
+            0
+        };
+
+        let mut lines = Vec::new();
+        for (i, repo) in cr.filtered.iter().enumerate().skip(scroll_offset).take(visible_count) {
+            let is_selected = i == cr.selected;
+            let style = if is_selected {
+                Style::default().fg(Color::White).bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let padded = format!("{:width$}", repo, width = list_area.width as usize);
+            lines.push(Line::from(Span::styled(padded, style)));
         }
 
         frame.render_widget(Paragraph::new(lines), list_area);

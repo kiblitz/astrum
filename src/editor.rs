@@ -7,6 +7,7 @@ use crate::pane::{FocusDirection, PaneContent, PaneLayout, SplitDirection};
 use crate::renderer::Renderer;
 use crate::swap::SwapManager;
 use crate::syntax::{EditInfo, HighlightCache, HighlightEngine};
+use crate::workspace;
 use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -156,6 +157,7 @@ pub enum Popup {
     FindFile(FindFileState),
     Palette(PaletteState),
     RecentPicker(RecentPickerState),
+    CloneRepo(crate::workspace::CloneRepoState),
 }
 
 /// Spacemacs-style find-file minibuffer.
@@ -339,6 +341,8 @@ pub struct Editor {
     config_error: Option<String>,
     /// Recently visited panes (most recent first) — files, directories, and terminals.
     recent_panes: Vec<RecentPane>,
+    /// Awaiting second key of `!c` sequence in git status view.
+    git_status_bang_pending: bool,
     /// Detached terminal sessions (not assigned to any pane). Key is terminal session id.
     detached_terminals: HashMap<usize, crate::terminal::TerminalSession>,
     /// Channel for receiving terminal output from background reader threads.
@@ -568,6 +572,7 @@ impl Editor {
             comment_syntax,
             config_error: None,
             recent_panes: Vec::new(),
+            git_status_bang_pending: false,
             detached_terminals: HashMap::new(),
             terminal_rx: rx,
             terminal_tx: tx,
@@ -908,6 +913,9 @@ impl Editor {
                                         Some(Popup::Palette(_)) => {
                                             self.handle_palette_key(key).await?;
                                         }
+                                        Some(Popup::CloneRepo(_)) => {
+                                            self.handle_clone_repo_key(key).await?;
+                                        }
                                         None => unreachable!(),
                                     }
                                     continue;
@@ -916,6 +924,8 @@ impl Editor {
                                 let active_content = &self.pane_layout.active_pane().content;
                                 let on_terminal_pane = active_content.is_terminal();
                                 let on_browser_pane = active_content.is_browser();
+                                let on_git_status = matches!(active_content, PaneContent::GitStatus(_));
+                                let on_workspace = matches!(active_content, PaneContent::Workspace(_));
                                 let in_command_mode = self.input.mode == Mode::Command;
                                 let in_search_mode = self.input.mode == Mode::Search;
                                 let browser_navigate = on_browser_pane
@@ -935,6 +945,14 @@ impl Editor {
                                             let _ = term.write_bytes(&bytes);
                                         }
                                     }
+                                } else if on_git_status && !in_command_mode && !in_search_mode
+                                    && self.input.mode == Mode::Normal
+                                {
+                                    self.handle_git_status_key(key).await?;
+                                } else if on_workspace && !in_command_mode && !in_search_mode
+                                    && self.input.mode == Mode::Normal
+                                {
+                                    self.handle_workspace_key(key).await?;
                                 } else if browser_navigate {
                                     self.handle_file_browser_action(key).await?;
                                 } else if on_browser_pane && !in_command_mode {
@@ -1513,6 +1531,27 @@ impl Editor {
 
             Action::OpenTerminal => {
                 self.open_terminal(None)?;
+            }
+
+            // -- Workspace / Git --
+            Action::OpenWorkspace => {
+                self.open_workspace()?;
+            }
+            Action::OpenGitRepo => {
+                self.open_git_repo()?;
+            }
+            Action::OpenGitStatus => {
+                self.open_git_status()?;
+            }
+            Action::OpenCloneRepo => {
+                if !matches!(self.popup, Some(Popup::CloneRepo(_))) {
+                    let cloned = self.workspace_cloned_set();
+                    self.popup = Some(Popup::CloneRepo(workspace::CloneRepoState::new(cloned)));
+                    execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+                }
+            }
+            Action::GitAddAll => {
+                self.git_add_all().await?;
             }
 
             Action::SaveBuffer => {
@@ -2323,6 +2362,276 @@ impl Editor {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // Workspace / Git
+    // ------------------------------------------------------------------
+
+    fn open_workspace(&mut self) -> Result<()> {
+        self.push_jump();
+        let ws = workspace::Workspace::open()?;
+        self.pane_layout.active_pane_mut().content = PaneContent::Workspace(ws);
+        self.input.mode = Mode::Normal;
+        Ok(())
+    }
+
+    fn open_git_repo(&mut self) -> Result<()> {
+        self.push_jump();
+        // Context-sensitive: if in a workspace repo, open GitRepo for that repo.
+        // Otherwise, fall back to opening the workspace list.
+        if let Some(repo_path) = self.active_workspace_repo() {
+            let gr = workspace::GitRepo::open(repo_path)?;
+            self.pane_layout.active_pane_mut().content = PaneContent::GitRepo(gr);
+            self.input.mode = Mode::Normal;
+        } else {
+            // push_jump already called above; open_workspace would double-push,
+            // so inline the workspace open logic here.
+            let ws = workspace::Workspace::open()?;
+            self.pane_layout.active_pane_mut().content = PaneContent::Workspace(ws);
+            self.input.mode = Mode::Normal;
+        }
+        Ok(())
+    }
+
+    fn open_git_status(&mut self) -> Result<()> {
+        if let Some(repo_path) = self.active_workspace_repo() {
+            self.push_jump();
+            let gs = workspace::GitStatus::open(repo_path)?;
+            self.pane_layout.active_pane_mut().content = PaneContent::GitStatus(gs);
+            self.input.mode = Mode::Normal;
+        } else {
+            self.status_message = "Not in a workspace repo".to_string();
+        }
+        Ok(())
+    }
+
+    async fn git_add_all(&mut self) -> Result<()> {
+        let repo_path = match &self.pane_layout.active_pane().content {
+            PaneContent::GitStatus(gs) => gs.repo_path.clone(),
+            _ => {
+                self.status_message = "Not on a git status view".to_string();
+                return Ok(());
+            }
+        };
+        workspace::git_add_all(&repo_path).await?;
+        self.status_message = "Staged all files".to_string();
+        // Jump back in history.
+        Box::pin(self.execute_action(Action::JumpBack)).await?;
+        Ok(())
+    }
+
+    /// Determine the workspace repo path from the current context.
+    /// Checks: active pane content (GitStatus, GitRepo, Workspace selection,
+    /// FileBrowser dir, Editor file path).
+    fn active_workspace_repo(&self) -> Option<PathBuf> {
+        match &self.pane_layout.active_pane().content {
+            PaneContent::GitStatus(gs) => Some(gs.repo_path.clone()),
+            PaneContent::GitRepo(gr) => Some(gr.repo_path.clone()),
+            PaneContent::Workspace(ws) => {
+                ws.repos.get(ws.selected).map(|r| r.path.clone())
+            }
+            PaneContent::FileBrowser(fb) => {
+                workspace::workspace_repo_for_path(&fb.current_dir)
+            }
+            PaneContent::Editor(buf_id) => {
+                self.buffers.iter()
+                    .find(|b| b.id == *buf_id)
+                    .and_then(|b| b.path.as_ref())
+                    .and_then(|p| workspace::workspace_repo_for_path(p))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the set of already-cloned repo names.
+    fn workspace_cloned_set(&self) -> std::collections::HashSet<String> {
+        workspace::Workspace::open()
+            .map(|ws| ws.cloned_set())
+            .unwrap_or_default()
+    }
+
+    async fn handle_workspace_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        use crossterm::event::KeyCode;
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let PaneContent::Workspace(ref mut ws) = self.pane_layout.active_pane_mut().content {
+                    if ws.selected + 1 < ws.repos.len() {
+                        ws.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let PaneContent::Workspace(ref mut ws) = self.pane_layout.active_pane_mut().content {
+                    ws.selected = ws.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => {
+                let repo_path = if let PaneContent::Workspace(ref ws) = self.pane_layout.active_pane().content {
+                    ws.repos.get(ws.selected).map(|r| r.path.clone())
+                } else {
+                    None
+                };
+                if let Some(path) = repo_path {
+                    self.push_jump();
+                    self.open_file_browser(path).await?;
+                }
+            }
+            _ => {
+                // Fall through to normal mode handling for SPC-prefixed keys etc.
+                let action = self.input.handle_key(key);
+                self.execute_action(action).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_git_status_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        use crossterm::event::KeyCode;
+
+        if self.git_status_bang_pending {
+            self.git_status_bang_pending = false;
+            if key.code == KeyCode::Char('c') {
+                self.git_add_all().await?;
+                return Ok(());
+            }
+            // Not 'c' — cancel the pending bang and process normally.
+        }
+
+        match key.code {
+            KeyCode::Char('!') => {
+                self.git_status_bang_pending = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let PaneContent::GitStatus(ref mut gs) = self.pane_layout.active_pane_mut().content {
+                    if gs.selected + 1 < gs.files.len() {
+                        gs.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let PaneContent::GitStatus(ref mut gs) = self.pane_layout.active_pane_mut().content {
+                    gs.selected = gs.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('r') => {
+                // Refresh
+                if let PaneContent::GitStatus(ref mut gs) = self.pane_layout.active_pane_mut().content {
+                    let _ = gs.refresh();
+                }
+            }
+            _ => {
+                let action = self.input.handle_key(key);
+                self.execute_action(action).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_clone_repo_key(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        use crossterm::event::KeyCode;
+        let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Esc => {
+                self.popup = None;
+                execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+            }
+            KeyCode::Enter => {
+                let selected = if let Some(Popup::CloneRepo(ref cr)) = self.popup {
+                    cr.selected_repo().map(String::from)
+                } else {
+                    None
+                };
+
+                if let Some(repo) = selected {
+                    // Close popup, clone in background.
+                    self.popup = None;
+                    execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+                    self.status_message = format!("Cloning {}...", repo);
+
+                    match workspace::git_clone(&repo).await {
+                        Ok(path) => {
+                            self.status_message = format!("Cloned {} to {}", repo, path.display());
+                            // Refresh workspace if it's currently shown.
+                            if let PaneContent::Workspace(_) = self.pane_layout.active_pane().content {
+                                self.open_workspace()?;
+                            }
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Clone failed: {}", e);
+                        }
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if key.code == KeyCode::Up || ctrl => {
+                if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                    cr.selected = cr.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.code == KeyCode::Down || ctrl => {
+                if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                    if cr.selected + 1 < cr.filtered.len() {
+                        cr.selected += 1;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                    cr.query.pop();
+                    cr.refilter();
+                }
+            }
+            KeyCode::Char(c) => {
+                // Check if typing a slash triggers a user fetch.
+                let should_fetch = if c == '/' {
+                    if let Some(Popup::CloneRepo(ref cr)) = self.popup {
+                        let user = cr.query.trim_end_matches('/').to_string();
+                        !user.is_empty() && !cr.cache.users.contains_key(&user)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                    cr.query.push(c);
+                    cr.refilter();
+                }
+
+                if should_fetch {
+                    let user = if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                        cr.loading = Some(cr.query.trim_end_matches('/').to_string());
+                        cr.query.trim_end_matches('/').to_string()
+                    } else {
+                        String::new()
+                    };
+
+                    if !user.is_empty() {
+                        match workspace::fetch_user_repos(&user).await {
+                            Ok(repos) => {
+                                if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                                    cr.cache.add_user(user, repos);
+                                    cr.loading = None;
+                                    cr.error = None;
+                                    cr.refilter();
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(Popup::CloneRepo(ref mut cr)) = self.popup {
+                                    cr.loading = None;
+                                    cr.error = Some(format!("{}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn handle_mouse_click(&mut self, col: u16, row: u16) -> Result<()> {
         // Only handle clicks on find-file overlay for now.
         if let Some(Popup::FindFile(ref mut ff)) = self.popup {
@@ -2613,7 +2922,10 @@ impl Editor {
                 line: pane.cursor.line,
                 col: pane.cursor.col,
             }),
-            PaneContent::Welcome => None,
+            PaneContent::Welcome
+            | PaneContent::Workspace(_)
+            | PaneContent::GitRepo(_)
+            | PaneContent::GitStatus(_) => None,
         }
     }
 

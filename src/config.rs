@@ -377,6 +377,10 @@ fn default_keymap() -> Keymap {
         ("space tab", Action::JumpBack),
         ("space S-tab", Action::JumpForward),
         ("space space", Action::CommandPalette),
+        ("space a f t", Action::OpenWorkspace),
+        ("space a f s", Action::OpenGitRepo),
+        ("space a h", Action::OpenGitStatus),
+        ("space u space a f s", Action::OpenCloneRepo),
         ("/", Action::EnterSearchForward),
         ("?", Action::EnterSearchBackward),
         ("n", Action::SearchNext),
@@ -437,6 +441,8 @@ fn default_keymap() -> Keymap {
     bind_all(&mut keymap.visual, visual_bindings);
 
     // --- Browser navigate mode ---
+    // Only browser-specific keys live here. Global SPC commands fall through
+    // to the normal keymap via the unified dispatch in editor.rs.
     let browser_bindings: &[(&str, Action)] = &[
         ("h", Action::MoveLeft),
         ("j", Action::MoveDown),
@@ -458,37 +464,16 @@ fn default_keymap() -> Keymap {
         ("/", Action::BrowserFilter),
         ("n", Action::BrowserNewFile),
         ("~", Action::BrowserHome),
-        ("space f f", Action::OpenFileBrowser),
-        ("space f s", Action::SaveBuffer),
-        ("space b b", Action::OpenRecentPicker),
-        ("space b n", Action::NextBuffer),
-        ("space b p", Action::PrevBuffer),
-        ("space b d", Action::CloseBuffer),
-        ("space q q", Action::QuitAll),
-        ("space q Q", Action::ForceQuitAll),
-        ("space w /", Action::SplitVertical),
-        ("space w -", Action::SplitHorizontal),
-        ("space w w", Action::FocusPaneNext),
-        ("space w h", Action::FocusPaneLeft),
-        ("space w j", Action::FocusPaneDown),
-        ("space w k", Action::FocusPaneUp),
-        ("space w l", Action::FocusPaneRight),
-        ("space w . h", Action::MovePaneLeft),
-        ("space w . j", Action::MovePaneDown),
-        ("space w . k", Action::MovePaneUp),
-        ("space w . l", Action::MovePaneRight),
-        ("space w . H", Action::MovePaneLeft),
-        ("space w . J", Action::MovePaneDown),
-        ("space w . K", Action::MovePaneUp),
-        ("space w . L", Action::MovePaneRight),
-        ("space w d", Action::ClosePane),
-        ("space !", Action::OpenTerminal),
-        ("space tab", Action::JumpBack),
-        ("space S-tab", Action::JumpForward),
-        ("space space", Action::CommandPalette),
         (":", Action::EnterCommandMode),
     ];
     bind_all(&mut keymap.browser, browser_bindings);
+
+    // Inherit all SPC-prefixed bindings from normal mode into browser mode.
+    // This ensures global commands (SPC a, SPC f, SPC w, etc.) work in the
+    // file browser without manual duplication. Browser-specific overrides
+    // (bound above) take priority.
+    let space_key = crate::keymap::KeyInput { code: crossterm::event::KeyCode::Char(' '), ctrl: false, alt: false };
+    keymap.browser.inherit_branch(&keymap.normal, &space_key);
 
     keymap
 }

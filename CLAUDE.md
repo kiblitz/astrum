@@ -47,6 +47,7 @@ When adding or modifying any UI feature (overlays, status line, pane layout, tab
 - **syntax.rs** — Tree-sitter incremental syntax highlighting
 - **file_browser.rs** — Tree-style file browser overlay on panes
 - **terminal.rs** — Built-in terminal emulator (PTY + VTE parsing)
+- **workspace.rs** — Workspace management, GitHub repo cache, git helpers
 - **swap.rs** — Swap file management and external change detection
 
 ## Key Design Decisions
@@ -83,6 +84,17 @@ A pane shows exactly **one thing at a time**. This replaces the old product-of-o
 
 ### SPC b d (CloseBuffer) semantics
 `SPC b d` closes the pane AND deletes the content (buffer/terminal/browser) from the system, removing it from recents. Key rule: if another pane shows the **same content** (checked via `PaneContent::same_identity()`), the pane is closed but the content/recents are left alone. This prevents duplicated buffers from being deleted when only one view is closed.
+
+### Key dispatch and keymap inheritance
+Each pane content type has its own key handling path in the event loop (editor.rs):
+- **Terminal (Insert mode):** keys go directly to PTY
+- **GitStatus, Workspace:** custom handlers for pane-specific keys (j/k/!/r/Enter), with fallthrough to `self.input.handle_key()` (normal keymap) for everything else
+- **FileBrowser (Navigate):** uses `handle_key_for_browser()` which looks up `keymap.browser`
+- **All other panes:** uses `self.input.handle_key()` (normal keymap)
+
+**Critical: the browser keymap inherits all SPC-prefixed bindings from the normal keymap** via `ModeKeymap::inherit_branch()` in config.rs. This ensures global commands (`SPC a`, `SPC f`, `SPC w`, `SPC b`, etc.) work from the file browser without manual duplication. When adding new SPC-prefixed bindings to normal mode, they automatically become available in the browser. Only browser-specific keys (j/k/enter/backspace/q/~/n/etc.) need to be in the browser keymap directly.
+
+**Never duplicate SPC bindings between normal and browser keymaps.** If a global command doesn't work in a specific pane type, the fix is to ensure the pane's key handler falls through to the normal keymap, not to add the binding to another keymap.
 
 ### Overlays vs pane content
 Find-file and command palette are **overlays** — they float above pane content and intercept all input. File browsers are **pane content** — they replace the buffer view on a specific pane. Overlays suppress cursor positioning (the `show_cursor` / `has_overlay` pattern in the renderer).
@@ -251,6 +263,20 @@ Embedded terminal emulator using PTY + VTE parsing.
 - **Recent panes**: The recent picker (`SPC b b`) tracks files, directories, and terminals. `recent_panes: Vec<RecentPane>` replaces the old `recent_paths`. Terminal entries show live title and "(exited)" status. `SPC b d` on a terminal kills it and removes it from recents.
 - **Resize**: Post-render resize loop updates attached terminals to match actual pane dimensions. `Event::Resize` only resizes detached terminals (as fallback). Grid is resized and PTY notified.
 - **Status line**: Shows "TERMINAL" mode indicator (green bg in Insert, blue in Normal), terminal title, and exit info if process ended.
+
+### Workspace and Git integration
+Project workspace with GitHub cloning and git operations.
+
+- **Workspace directory**: `dirs::data_dir()/astrum/workspace/` — each subdirectory is a cloned git repo.
+- **Pane content types**: Three new `PaneContent` variants:
+  - `Workspace(Workspace)` — list of cloned repos, `SPC a f t`
+  - `GitRepo(GitRepo)` — single repo overview (name, branch, remote), `SPC a f s` (context-sensitive: shows GitRepo if in workspace repo, otherwise Workspace list)
+  - `GitStatus(GitStatus)` — uncommitted files, `SPC a h` (from workspace context)
+- **Clone popup**: `Popup::CloneRepo(CloneRepoState)` opened via `SPC u SPC a f s`. Fuzzy search over cached GitHub repos. Type `user/` to fetch repos for that user via `gh api`. Already-cloned repos are excluded from the list. Enter clones the selected repo.
+- **GitHub repo cache**: `dirs::data_dir()/astrum/github_repos.json` — `HashMap<String, Vec<String>>` (user → repo names). Populated lazily when user types `user/` in the clone popup. Persisted to disk via serde_json.
+- **`!c` in GitStatus**: Two-key sequence (`!` then `c`) runs `git add .` on the repo, then jumps back in history.
+- **Workspace context**: Determined by checking if the current pane's content path is under the workspace directory. Used by `SPC a f s` and `SPC a h` to know which repo to operate on.
+- **Navigation**: j/k to move selection, Enter on a workspace repo opens file browser at that path.
 
 ## Style
 - Inspired by spacemacs/vim. SPC-prefixed key chords for commands.

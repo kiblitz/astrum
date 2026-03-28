@@ -1,6 +1,7 @@
 use crate::buffer::Cursor;
 use crate::file_browser::FileBrowser;
 use crate::terminal::TerminalSession;
+use crate::workspace::{GitRepo, GitStatus, Workspace};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +20,9 @@ pub enum PaneContent {
     Editor(usize),              // buffer_id (TextBuffer stored centrally)
     FileBrowser(FileBrowser),   // owned by pane
     Terminal(TerminalSession),  // owned by pane
+    Workspace(Workspace),       // list of cloned repos
+    GitRepo(GitRepo),           // single repo overview
+    GitStatus(GitStatus),       // uncommitted files in a repo
 }
 
 impl std::fmt::Debug for PaneContent {
@@ -28,6 +32,9 @@ impl std::fmt::Debug for PaneContent {
             PaneContent::Editor(id) => write!(f, "Buffer({id})"),
             PaneContent::FileBrowser(_) => write!(f, "FileBrowser(..)"),
             PaneContent::Terminal(_) => write!(f, "Terminal(..)"),
+            PaneContent::Workspace(_) => write!(f, "Workspace(..)"),
+            PaneContent::GitRepo(_) => write!(f, "GitRepo(..)"),
+            PaneContent::GitStatus(_) => write!(f, "GitStatus(..)"),
         }
     }
 }
@@ -111,6 +118,9 @@ impl PaneContent {
             (PaneContent::Editor(a), PaneContent::Editor(b)) => a == b,
             (PaneContent::FileBrowser(a), PaneContent::FileBrowser(b)) => a.current_dir == b.current_dir,
             (PaneContent::Terminal(a), PaneContent::Terminal(b)) => a.id == b.id,
+            (PaneContent::Workspace(a), PaneContent::Workspace(b)) => a.workspace_dir == b.workspace_dir,
+            (PaneContent::GitRepo(a), PaneContent::GitRepo(b)) => a.repo_path == b.repo_path,
+            (PaneContent::GitStatus(a), PaneContent::GitStatus(b)) => a.repo_path == b.repo_path,
             _ => false,
         }
     }
@@ -591,6 +601,10 @@ impl PaneLayout {
             PaneContent::FileBrowser(fb) => PaneContent::FileBrowser(fb.clone()),
             PaneContent::Terminal(_) => PaneContent::Welcome,
             PaneContent::Welcome => PaneContent::Welcome,
+            // Non-cloneable pane types — new pane gets Welcome.
+            PaneContent::Workspace(_) | PaneContent::GitRepo(_) | PaneContent::GitStatus(_) => {
+                PaneContent::Welcome
+            }
         };
         let mut new_pane = Pane::new(new_content);
         new_pane.cursor = active.cursor;

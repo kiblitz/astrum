@@ -184,6 +184,24 @@ impl ModeKeymap {
         }
     }
 
+    /// Copy all bindings under `prefix_key` from `source` into this keymap.
+    /// If the prefix key doesn't exist in source, this is a no-op.
+    /// Existing bindings under the same prefix in `self` take priority.
+    pub fn inherit_branch(&mut self, source: &ModeKeymap, prefix_key: &KeyInput) {
+        let source_children = match source.root.get(prefix_key) {
+            Some(KeyTrieNode::Branch(children)) => children,
+            _ => return,
+        };
+
+        let dest_node = self.root
+            .entry(prefix_key.clone())
+            .or_insert_with(|| KeyTrieNode::Branch(HashMap::new()));
+
+        if let KeyTrieNode::Branch(dest_children) = dest_node {
+            merge_trie(source_children, dest_children);
+        }
+    }
+
     /// Insert a key sequence → action binding.
     /// Returns an error if the binding conflicts with an existing one
     /// (a prefix of this sequence is already a leaf, or this sequence
@@ -274,6 +292,31 @@ fn insert_into_trie(
                     existing
                 ),
             })
+        }
+    }
+}
+
+/// Recursively merge `source` trie into `dest`. Existing entries in `dest` take priority.
+fn merge_trie(
+    source: &HashMap<KeyInput, KeyTrieNode>,
+    dest: &mut HashMap<KeyInput, KeyTrieNode>,
+) {
+    for (key, src_node) in source {
+        match dest.get_mut(key) {
+            Some(KeyTrieNode::Branch(dest_children)) => {
+                // Both are branches — recurse.
+                if let KeyTrieNode::Branch(src_children) = src_node {
+                    merge_trie(src_children, dest_children);
+                }
+                // If dest has a branch but source has a leaf, keep dest's branch.
+            }
+            Some(KeyTrieNode::Leaf(_)) => {
+                // dest already has a binding — keep it (dest takes priority).
+            }
+            None => {
+                // Key doesn't exist in dest — copy from source.
+                dest.insert(key.clone(), src_node.clone());
+            }
         }
     }
 }

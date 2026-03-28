@@ -142,6 +142,13 @@ pub enum Action {
     // -- Terminal --
     OpenTerminal,
 
+    // -- Workspace / Git --
+    OpenWorkspace,
+    OpenGitRepo,
+    OpenGitStatus,
+    OpenCloneRepo,
+    GitAddAll,
+
     // -- Runtime-only --
     InsertChar(char),
     ExecuteCommand(String),
@@ -261,6 +268,12 @@ const ACTION_TABLE: &[(&str, &str, Action)] = &[
     ("CommentToggle", "Toggle line comment", Action::CommentToggle),
     // Terminal
     ("OpenTerminal", "Open terminal", Action::OpenTerminal),
+    // Workspace / Git
+    ("OpenWorkspace", "Open workspace", Action::OpenWorkspace),
+    ("OpenGitRepo", "Open git repo", Action::OpenGitRepo),
+    ("OpenGitStatus", "Open git status", Action::OpenGitStatus),
+    ("OpenCloneRepo", "Clone from GitHub", Action::OpenCloneRepo),
+    ("GitAddAll", "Git add all", Action::GitAddAll),
 ];
 
 impl Action {
